@@ -13,10 +13,18 @@ from __future__ import annotations
 
 from typing import Any, Protocol, runtime_checkable
 
-from tm.stores.sqlite_store import SQLiteStore
+from tm.stores.sqlite_store import (
+    MigrationError,
+    MigrationPostTxnError,
+    MigrationPragmaError,
+    SQLiteStore,
+)
 
 __all__ = [
+    "MigrationError",
     "MigrationIntegrityError",
+    "MigrationPostTxnError",
+    "MigrationPragmaError",
     "Store",
     "StoreReader",
 ]

@@ -36,6 +36,74 @@ _DEFAULT_MIGRATIONS_DIR = Path(__file__).resolve().parents[2] / "migrations"
 
 _MIGRATION_FILENAME_RE = re.compile(r"^(\d{4})_[A-Za-z0-9_\-]+\.sql$")
 
+# Header directive parser: ``-- !pre-txn: <SQL>`` or ``-- !post-txn: <SQL>``.
+# Tolerant of leading whitespace, optional whitespace between ``--`` and ``!``,
+# and optional whitespace around the colon. Stops at first non-comment/non-empty
+# line so the body splitter sees the same SQL it always has.
+_HEADER_DIRECTIVE_RE = re.compile(
+    r"^\s*--\s*!\s*(pre-txn|post-txn)\s*:\s*(.*?)\s*$",
+)
+_HEADER_COMMENT_RE = re.compile(r"^\s*--")
+_HEADER_BLANK_RE = re.compile(r"^\s*$")
+_UTF8_BOM = "﻿"
+
+
+class MigrationError(RuntimeError):
+    """Base class for migration runner failures."""
+
+
+class MigrationPragmaError(MigrationError):
+    """Raised when a ``-- !pre-txn:`` pragma fails before BEGIN IMMEDIATE.
+
+    Attributes:
+        version: migration version whose pre-txn pragma failed.
+        pragma_sql: the offending pragma statement.
+        cause: the underlying ``sqlite3`` error.
+    """
+
+    def __init__(
+        self,
+        version: int,
+        pragma_sql: str,
+        cause: BaseException,
+    ) -> None:
+        super().__init__(
+            f"migration {version:04d}: pre-txn pragma failed: "
+            f"{pragma_sql!r} ({cause!r})"
+        )
+        self.version = version
+        self.pragma_sql = pragma_sql
+        self.cause = cause
+
+
+class MigrationPostTxnError(MigrationError):
+    """Raised when a ``-- !post-txn:`` pragma fails AFTER body commit.
+
+    The body changes ARE persisted and the ``schema_migrations`` row IS
+    written; only the post-txn pragma side-effect could not complete. Callers
+    may need to manually re-apply the post-txn pragma.
+
+    Attributes:
+        version: migration version whose post-txn pragma failed.
+        pragma_sql: the offending pragma statement.
+        cause: the underlying ``sqlite3`` error.
+    """
+
+    def __init__(
+        self,
+        version: int,
+        pragma_sql: str,
+        cause: BaseException,
+    ) -> None:
+        super().__init__(
+            f"migration {version:04d}: post-txn pragma failed AFTER commit: "
+            f"{pragma_sql!r} ({cause!r})"
+        )
+        self.version = version
+        self.pragma_sql = pragma_sql
+        self.cause = cause
+
+
 _REQUIRED_EVENT_KEYS: tuple[str, ...] = (
     "event_id",
     "case_id",
@@ -224,19 +292,33 @@ class SQLiteStore:
             if version <= max_applied:
                 continue
             sql_text = body.decode("utf-8")
+            pre_txn_stmts, post_txn_stmts = _parse_migration_header(sql_text)
             applied_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+            # 1. Pre-txn pragmas run on the same connection BEFORE BEGIN
+            #    IMMEDIATE. Pragmas like ``foreign_keys`` are silent no-ops
+            #    inside a transaction (per SQLite docs), so they MUST run
+            #    here to actually take effect during body execution.
+            for pragma_sql in pre_txn_stmts:
+                try:
+                    self._conn.execute(pragma_sql)
+                except sqlite3.Error as err:
+                    raise MigrationPragmaError(
+                        version=version,
+                        pragma_sql=pragma_sql,
+                        cause=err,
+                    ) from err
+
+            # 2-4. Body inside BEGIN IMMEDIATE; on body failure the txn
+            #      rolls back and post-txn pragmas DO NOT run (so a failure
+            #      isn't masked by a "successful" pragma reset).
             with self._write_txn() as cur:
                 # executescript would auto-commit; we already own the txn, so
-                # split on semicolons via sqlite3's executescript-equivalent by
-                # using executescript on the connection inside the same txn.
-                # SQLite allows nested executescript only by committing first;
-                # to keep one atomic transaction per migration, apply the
-                # statements via the connection's executescript after we've
-                # opened BEGIN IMMEDIATE: not allowed. So instead, run
-                # statements individually using a simple splitter that respects
-                # ``BEGIN``/``END`` blocks for triggers. For 0001_init.sql
-                # (DDL only) a naive split on ``;`` is sufficient and keeps us
-                # inside the outer transaction.
+                # split on semicolons via a simple splitter that respects
+                # single-quoted strings and ``--`` line comments. Sufficient
+                # for DDL-only migrations; if a future migration needs
+                # trigger bodies (BEGIN..END) the splitter will need
+                # extending then — out of scope here.
                 for stmt in _split_sql_statements(sql_text):
                     if stmt.strip():
                         cur.execute(stmt)
@@ -250,6 +332,20 @@ class SQLiteStore:
                 file=sys.stderr,
             )
             applied_now.append(version)
+
+            # 5. Post-txn pragmas: body is committed, schema_migrations row
+            #    is written. If a post-txn pragma fails we still consider
+            #    the migration "applied" (it WAS) but raise so the caller
+            #    knows pragma side-effects did not complete.
+            for pragma_sql in post_txn_stmts:
+                try:
+                    self._conn.execute(pragma_sql)
+                except sqlite3.Error as err:
+                    raise MigrationPostTxnError(
+                        version=version,
+                        pragma_sql=pragma_sql,
+                        cause=err,
+                    ) from err
         return applied_now
 
     # ----------------------------------------------------------- events: write
@@ -367,6 +463,56 @@ def _row_to_event(row: sqlite3.Row) -> dict[str, Any]:
     except json.JSONDecodeError:
         out["attributes"] = {}
     return out
+
+
+def _parse_migration_header(sql_text: str) -> tuple[list[str], list[str]]:
+    """Extract ``-- !pre-txn:`` and ``-- !post-txn:`` directives.
+
+    Parses ONLY the leading comment block. Stops at the first line that is
+    neither a comment nor empty; from that line onward is the migration body
+    (which the body splitter sees unchanged — header parsing is a runtime
+    concern only and does NOT alter the checksum input).
+
+    Tolerates a leading UTF-8 BOM and arbitrary leading whitespace on each
+    header line. Multiple pre-txn or post-txn directives are allowed and are
+    returned in source order.
+
+    Returns:
+        ``(pre_txn_stmts, post_txn_stmts)`` — each pragma SQL statement with
+        a single trailing ``;`` stripped (sqlite3.execute requires exactly
+        one statement, no trailing semicolon-separated tail).
+    """
+    pre_txn: list[str] = []
+    post_txn: list[str] = []
+    if not sql_text:
+        return pre_txn, post_txn
+    # Strip BOM if present at the very start.
+    if sql_text.startswith(_UTF8_BOM):
+        sql_text = sql_text[len(_UTF8_BOM) :]
+    for raw_line in sql_text.splitlines():
+        if _HEADER_BLANK_RE.match(raw_line):
+            # Empty/whitespace-only line: still in header region, keep scanning.
+            continue
+        if not _HEADER_COMMENT_RE.match(raw_line):
+            # First non-comment, non-empty line: body starts here.
+            break
+        m = _HEADER_DIRECTIVE_RE.match(raw_line)
+        if m is None:
+            # Plain ``-- comment`` — skip silently.
+            continue
+        kind = m.group(1)
+        stmt = m.group(2).strip()
+        # Drop a single trailing ``;`` if present so sqlite3.execute is happy.
+        if stmt.endswith(";"):
+            stmt = stmt[:-1].rstrip()
+        if not stmt:
+            # ``-- !pre-txn:`` with empty payload — skip; nothing to run.
+            continue
+        if kind == "pre-txn":
+            pre_txn.append(stmt)
+        else:  # post-txn
+            post_txn.append(stmt)
+    return pre_txn, post_txn
 
 
 def _split_sql_statements(sql_text: str) -> list[str]:
