@@ -33,3 +33,21 @@ def default_db_path() -> Path:
     is created as a side-effect.
     """
     return default_data_dir() / "tm.db"
+
+
+def default_socket_path() -> Path:
+    """Return the canonical path to the daemon's Unix domain socket.
+
+    Equivalent to ``default_data_dir() / "tm.sock"``.  The parent directory
+    is created as a side-effect.
+    """
+    return default_data_dir() / "tm.sock"
+
+
+def default_pid_path() -> Path:
+    """Return the canonical path to the daemon's PID file.
+
+    Equivalent to ``default_data_dir() / "tm.pid"``.  The parent directory
+    is created as a side-effect.
+    """
+    return default_data_dir() / "tm.pid"
