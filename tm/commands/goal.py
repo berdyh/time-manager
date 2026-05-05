@@ -23,6 +23,7 @@ from typing import Annotated
 import typer
 
 from tm._paths import default_db_path
+from tm.models.goals import validate_priority
 from tm.repositories.goals import GoalsRepository
 from tm.stores.sqlite_store import SQLiteStore
 
@@ -33,7 +34,7 @@ goal_app = typer.Typer(help="Goal pursuit management.")
 # ---------------------------------------------------------------------------
 
 _DbPathOption = Annotated[
-    Path,
+    Path | None,
     typer.Option(
         "--db-path",
         envvar="TM_DB",
@@ -73,22 +74,24 @@ def add(
         typer.Option(
             "--target",
             "-t",
+            # Bare ISO dates (e.g. "2026-12-31") are treated as midnight UTC by
+            # the repository layer and stored as "2026-12-31T00:00:00Z" — the
+            # project-standard ISO-T-Z format for all UTC timestamps.
             help="Target completion date/time in ISO 8601 format (e.g. 2026-12-31).",
         ),
     ] = None,
-    db_path: _DbPathOption = None,  # type: ignore[assignment]
+    db_path: _DbPathOption = None,
 ) -> None:
     """Add a new goal."""
     if db_path is None:
         db_path = default_db_path()
 
-    # Validate priority before hitting the DB (mirrors Goal model constraint)
-    if priority is not None and not (1 <= priority <= 3):
-        typer.echo(
-            f"error: priority must be an integer in [1, 3] or None, got {priority!r}",
-            err=True,
-        )
-        raise typer.Exit(1)
+    # Validate priority before hitting the DB using the canonical model validator.
+    try:
+        validate_priority(priority)
+    except ValueError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(1) from exc
 
     # Parse target date if provided
     target_dt: datetime | None = None
@@ -130,7 +133,7 @@ def list_goals(
             help="Filter by status: active, completed, abandoned, all.",
         ),
     ] = "active",
-    db_path: _DbPathOption = None,  # type: ignore[assignment]
+    db_path: _DbPathOption = None,
 ) -> None:
     """List goals, filtered by status (default: active)."""
     if db_path is None:
@@ -184,7 +187,7 @@ def list_goals(
 @goal_app.command()
 def complete(
     goal_id: Annotated[str, typer.Argument(help="Full 26-character ULID of the goal.")],
-    db_path: _DbPathOption = None,  # type: ignore[assignment]
+    db_path: _DbPathOption = None,
 ) -> None:
     """Mark a goal as completed."""
     if db_path is None:
@@ -213,7 +216,7 @@ def abandon(
         str | None,
         typer.Option("--reason", "-r", help="Optional reason for abandonment."),
     ] = None,
-    db_path: _DbPathOption = None,  # type: ignore[assignment]
+    db_path: _DbPathOption = None,
 ) -> None:
     """Mark a goal as abandoned."""
     if db_path is None:
@@ -238,7 +241,7 @@ def abandon(
 @goal_app.command()
 def show(
     goal_id: Annotated[str, typer.Argument(help="Full 26-character ULID of the goal.")],
-    db_path: _DbPathOption = None,  # type: ignore[assignment]
+    db_path: _DbPathOption = None,
 ) -> None:
     """Show details for a single goal."""
     if db_path is None:
