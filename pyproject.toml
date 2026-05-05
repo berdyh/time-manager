@@ -9,6 +9,7 @@ description = "Time manager CLI — behavioral time tracking from end-of-day con
 requires-python = ">=3.11"
 dependencies = [
     "typer~=0.12",
+    "anthropic>=0.40,<1",
 ]
 
 [project.scripts]
