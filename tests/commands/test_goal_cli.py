@@ -247,5 +247,6 @@ def test_show_renders_all_fields(tmp_path: Path) -> None:
         "TARGET:",
         "COMPLETED_AT:",
         "ABANDONED_AT:",
+        "ABANDON_REASON:",
     ):
         assert label in output
