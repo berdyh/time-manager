@@ -3,8 +3,10 @@ from __future__ import annotations
 import typer
 
 from tm import __version__
+from tm.commands.goal import goal_app
 
 app = typer.Typer(help="tm — behavioral time manager CLI.")
+app.add_typer(goal_app, name="goal")
 
 
 def version_callback(value: bool) -> None:
