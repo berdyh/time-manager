@@ -290,6 +290,50 @@ def test_conformance_empty_log_returns_zeroed_result(tmp_path: Path) -> None:
     assert result.trace_fitness_per_case == {}
 
 
+def test_conformance_rehydration_fallback_flagged(tmp_path: Path) -> None:
+    """When model window events are redacted, fallback flag must be True."""
+    import sqlite3
+
+    repo = _make_repo(tmp_path)
+    _seed_workday_log(repo)
+    miner = ProcessMiner(repo)
+
+    # Discover from a narrow window (only 2026-01-01).
+    model = miner.discover_inductive_miner(
+        lens="workday",
+        since="2026-01-01T00:00:00Z",
+        until="2026-01-02T00:00:00Z",
+    )
+
+    # Redact all events that fall inside the model's originating window by
+    # deleting them directly from the database (simulates GC / redaction).
+    db_path = tmp_path / "tm.db"
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute(
+            "DELETE FROM events WHERE timestamp >= '2026-01-01T00:00:00Z'"
+            " AND timestamp < '2026-01-02T00:00:00Z'"
+        )
+        conn.commit()
+
+    # Days 2 and 3 are still in the DB; they form the replay target.
+    # The model's window is empty → fallback fires.
+    result = miner.conformance_token_replay(model, lens="workday")
+
+    assert result.extractor_metadata["rehydration_fallback_used"] is True
+
+
+def test_conformance_no_fallback_flag_false(tmp_path: Path) -> None:
+    """When model window events are intact, fallback flag must be False."""
+    repo = _make_repo(tmp_path)
+    _seed_workday_log(repo)
+    miner = ProcessMiner(repo)
+
+    model = miner.discover_inductive_miner(lens="workday")
+    result = miner.conformance_token_replay(model, lens="workday")
+
+    assert result.extractor_metadata["rehydration_fallback_used"] is False
+
+
 # ---------------------------------------------------------------------------
 # Variants
 # ---------------------------------------------------------------------------
@@ -578,7 +622,7 @@ def test_conversion_uses_iso_t_z_timestamps() -> None:
     ts = df["time:timestamp"].iloc[0]
     # Must be tz-aware UTC.
     assert ts.tzinfo is not None
-    assert str(ts.tz).lower() in ("utc", "utc"), f"unexpected tz: {ts.tz}"
+    assert str(ts.tz).upper() == "UTC", f"unexpected tz: {ts.tz}"
 
 
 def test_conversion_unsupported_lens_raises() -> None:
