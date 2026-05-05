@@ -3,6 +3,12 @@
 This is the canonical write path for events going forward.  The legacy
 ``Store.append_event`` (tm/store.py) remains available for backward compatibility.
 
+**case_date sentinel:** Empty-string ``case_date`` (``''``) is a sentinel meaning
+'unset'.  The ``list_distinct_case_dates`` helper filters these out; downstream
+consumers (T-OUT-01, T-PM-02, etc.) must filter ``case_date <> ''`` if they read
+events directly.  ``_derive_case_date`` never returns ``''`` — it raises
+``ValueError`` on malformed input instead.
+
 Design notes:
 - Opens a fresh ``sqlite3.Connection`` per call (no shared long-lived connection).
 - ``advances_goal`` is stored as a soft FK (TEXT column, no REFERENCES constraint).
@@ -22,7 +28,9 @@ Design notes:
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -37,28 +45,63 @@ def _open_conn(db_path: str) -> sqlite3.Connection:
     return conn
 
 
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
 def _derive_case_date(timestamp_iso: str) -> str:
     """Derive the ``case_date`` (YYYY-MM-DD) prefix from an ISO timestamp.
 
-    Accepts either a full ISO 8601 timestamp like ``2026-05-05T10:00:00Z``
-    (returns ``2026-05-05``) or a bare date like ``2026-05-05`` (returns
-    itself).  Raises ``ValueError`` for malformed input so that callers never
-    silently store an empty case_date.
+    Accepts:
 
-    The validation is intentionally minimal: we require a ``YYYY-MM-DD`` prefix
-    where year/month/day are all numeric.  This avoids importing the heavier
-    ``datetime.fromisoformat`` parser while still catching obvious garbage.
+    - A full ISO 8601 timestamp with ``T`` separator, e.g.
+      ``2026-05-05T10:00:00Z`` → ``2026-05-05``.
+    - A space-separated datetime (SQLite's ``datetime('now')`` format), e.g.
+      ``2026-05-05 10:00:00`` → ``2026-05-05``.
+    - A bare date, e.g. ``2026-05-05`` → ``2026-05-05``.
+
+    Raises ``ValueError`` for malformed input (so callers never silently store
+    an empty ``case_date`` sentinel) and for impossible calendar dates such as
+    month 13, day 0, etc.
+
+    Steps:
+
+    1. Accept input; strip surrounding whitespace.
+    2. Pre-process: if the string contains ``'T'`` or ``' '``, take the prefix
+       before the first such separator; otherwise treat the whole string as the
+       candidate date.
+    3. Verify the candidate matches ``r'^\\d{4}-\\d{2}-\\d{2}$'``.
+    4. Validate via ``datetime.fromisoformat`` to reject impossible calendar
+       dates (month > 12, day 0, etc.).  Note: year 0 is also rejected by
+       Python's ``datetime`` (must be 1–9999).
+    5. Return the validated ``YYYY-MM-DD`` string.
     """
-    msg = f"invalid timestamp for case_date derivation: {timestamp_iso!r}"
     if not isinstance(timestamp_iso, str) or not timestamp_iso:
-        raise ValueError(msg)
-    head = timestamp_iso.split("T", 1)[0]
-    parts = head.split("-")
-    if len(parts) != 3 or not all(p.isdigit() for p in parts):
-        raise ValueError(msg)
-    if len(parts[0]) != 4 or len(parts[1]) != 2 or len(parts[2]) != 2:
-        raise ValueError(msg)
-    return head
+        raise ValueError(
+            f"invalid timestamp for case_date derivation: {timestamp_iso!r}"
+        )
+
+    raw = timestamp_iso.strip()
+
+    # Step 2: split on 'T' or ' ' to isolate the date prefix.
+    for sep in ("T", " "):
+        if sep in raw:
+            raw = raw.split(sep, 1)[0]
+            break
+
+    # Step 3: digit-width check.
+    if not _DATE_RE.match(raw):
+        raise ValueError(
+            f"invalid timestamp for case_date derivation: {timestamp_iso!r}"
+        )
+
+    # Step 4: calendar validity check via fromisoformat.
+    try:
+        datetime.fromisoformat(raw)
+    except ValueError:
+        raise ValueError(f"invalid calendar date: {timestamp_iso!r}") from None
+
+    # Step 5: return the validated date string.
+    return raw
 
 
 def _row_to_event(row: sqlite3.Row) -> dict[str, Any]:
