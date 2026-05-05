@@ -211,10 +211,7 @@ class VocabAligner:
         self._vocab_repo = vocab_repo
         self._llm = llm
         self._model = model
-        # ``VocabularyRepository`` exposes its db path only via the
-        # underscored ``_db_path`` attribute; we deliberately reach in here
-        # rather than introducing a public accessor (out-of-scope edit).
-        self._db_path = vocab_repo._db_path  # noqa: SLF001
+        self._db_path = vocab_repo.db_path
 
     # ------------------------------------------------------------------
     # Public API
