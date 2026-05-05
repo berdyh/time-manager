@@ -97,13 +97,15 @@ class GoalsRepository:
             else:
                 target_str = target_completion_at.strftime(_ISO_FMT)
 
+        created_at = _now_iso()
         conn = _open_conn(self._db_path)
         try:
             conn.execute(
                 "INSERT INTO goals "
-                "(goal_id, name, description, priority, target_completion_at) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (goal_id, name, description, priority, target_str),
+                "(goal_id, name, description, priority, "
+                "target_completion_at, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (goal_id, name, description, priority, target_str, created_at),
             )
             conn.commit()
             row = conn.execute(
