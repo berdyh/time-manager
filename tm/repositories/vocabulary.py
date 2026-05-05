@@ -292,6 +292,69 @@ class VocabularyRepository:
         finally:
             conn.close()
 
+    def add_canonical(
+        self,
+        activity_name: str,
+        description: str | None = None,
+    ) -> VocabularyEntry:
+        """Insert a new canonical activity into the vocabulary.
+
+        Parameters
+        ----------
+        activity_name:
+            Must be non-empty and fully lowercase (no uppercase characters).
+        description:
+            Optional human-readable description of the activity.
+
+        Returns
+        -------
+        VocabularyEntry
+            The freshly inserted row fetched from the database.
+
+        Raises
+        ------
+        ValueError
+            If ``activity_name`` is empty or contains uppercase characters,
+            or if the ``activity_name`` already exists in the vocabulary
+            (duplicate PK).
+
+        Notes
+        -----
+        Uses ``INSERT OR ABORT`` so SQLite raises ``IntegrityError`` on a
+        duplicate PK; the method catches that and re-raises as
+        ``ValueError("activity already exists: <name>")``.
+        """
+        if not activity_name:
+            raise ValueError("activity_name must not be empty")
+        if activity_name != activity_name.lower():
+            raise ValueError(f"activity_name must be lowercase, got {activity_name!r}")
+
+        conn = _open_conn(self._db_path)
+        try:
+            try:
+                conn.execute(
+                    "INSERT OR ABORT INTO vocabulary (activity_name, description) "
+                    "VALUES (?, ?)",
+                    (activity_name, description),
+                )
+                conn.commit()
+            except sqlite3.IntegrityError as exc:
+                raise ValueError(f"activity already exists: {activity_name}") from exc
+
+            row = conn.execute(
+                "SELECT activity_name, description, vocab_version, added_at, status "
+                "FROM vocabulary WHERE activity_name = ?",
+                (activity_name,),
+            ).fetchone()
+        finally:
+            conn.close()
+
+        if row is None:  # pragma: no cover
+            raise RuntimeError(
+                f"failed to fetch newly inserted row for {activity_name!r}"
+            )
+        return _row_to_entry(row)
+
     def archive(self, activity_name: str) -> None:
         """Set ``status='archived'`` for an activity.
 
