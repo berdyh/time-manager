@@ -374,18 +374,22 @@ class ProcessMiner:
     ) -> ConformanceResult:
         """Run token-based replay over the lens window.
 
-        For v1 we do not persist the Petri net — instead we re-discover it
-        from the same window before replaying.  ``model`` is accepted to
-        preserve the API shape needed by T-PM-03/T-PM-04 and to let callers
-        thread metadata through (e.g. the originating process_tree_repr is
-        echoed in the result metadata).
+        For v1 we do not persist the Petri net.  Instead we re-discover the
+        net from the *model's* original window (taken from
+        ``model.extractor_metadata``) and then replay against the
+        conformance call's window.  This preserves the spirit of "rehydrate
+        the cached model" without an actual cache, and lets callers detect
+        drift when they conform a wider window than they discovered from.
+
+        Once T-PM-03 lands (Kuzu projection), the rehydration step will
+        fetch the persisted net instead of re-mining.
         """
-        df = self._load_dataframe(lens=lens, since=since, until=until)
+        replay_df = self._load_dataframe(lens=lens, since=since, until=until)
 
         metadata = self._base_metadata(lens=lens, since=since, until=until)
         metadata["source_process_tree"] = model.process_tree_repr
 
-        if df.empty:
+        if replay_df.empty:
             return ConformanceResult(
                 trace_fitness_per_case={},
                 aggregate_fitness=0.0,
@@ -396,10 +400,28 @@ class ProcessMiner:
                 extractor_metadata=metadata,
             )
 
+        # Rebuild the model from its originating window so the replay scores
+        # the *cached* model rather than a freshly mined one.
+        model_meta = model.extractor_metadata or {}
+        model_lens: CaseLens = model_meta.get("lens", lens)
+        model_df = self._load_dataframe(
+            lens=model_lens,
+            since=model_meta.get("since"),
+            until=model_meta.get("until"),
+            case_id=model_meta.get("case_id"),
+        )
+        if model_df.empty:
+            # No model to rehydrate from — fall back to the replay log so we
+            # at least return a deterministic result instead of crashing.
+            model_df = replay_df
+
         import pm4py
 
-        net, im, fm = pm4py.discover_petri_net_inductive(df)
-        replayed = pm4py.conformance_diagnostics_token_based_replay(df, net, im, fm)
+        net, im, fm = pm4py.discover_petri_net_inductive(model_df)
+        replayed = pm4py.conformance_diagnostics_token_based_replay(
+            replay_df, net, im, fm
+        )
+        df = replay_df
 
         case_ids = _case_order(df)
         trace_fitness: dict[str, float] = {}
