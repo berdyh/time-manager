@@ -36,6 +36,11 @@ from tm.repositories.events import EventsRepository
 if TYPE_CHECKING:  # pragma: no cover - import guard for type checker only
     import pandas as pd
 
+import pm4py
+import pm4py.util.constants
+
+pm4py.util.constants.SHOW_PROGRESS_BAR = False  # silence tqdm progress bars
+
 __all__ = [
     "CaseLens",
     "ConformanceResult",
@@ -390,6 +395,7 @@ class ProcessMiner:
         metadata["source_process_tree"] = model.process_tree_repr
 
         if replay_df.empty:
+            metadata["rehydration_fallback_used"] = False
             return ConformanceResult(
                 trace_fitness_per_case={},
                 aggregate_fitness=0.0,
@@ -410,20 +416,18 @@ class ProcessMiner:
             until=model_meta.get("until"),
             case_id=model_meta.get("case_id"),
         )
-        if model_df.empty:
+        rehydration_fallback_used = model_df.empty
+        if rehydration_fallback_used:
             # No model to rehydrate from — fall back to the replay log so we
             # at least return a deterministic result instead of crashing.
             model_df = replay_df
-
-        import pm4py
 
         net, im, fm = pm4py.discover_petri_net_inductive(model_df)
         replayed = pm4py.conformance_diagnostics_token_based_replay(
             replay_df, net, im, fm
         )
-        df = replay_df
 
-        case_ids = _case_order(df)
+        case_ids = _case_order(replay_df)
         trace_fitness: dict[str, float] = {}
         consumed: list[float] = []
         produced: list[float] = []
@@ -445,6 +449,7 @@ class ProcessMiner:
         avg_consumed = sum(consumed) / len(consumed) if consumed else None
         avg_produced = sum(produced) / len(produced) if produced else None
 
+        metadata["rehydration_fallback_used"] = rehydration_fallback_used
         return ConformanceResult(
             trace_fitness_per_case=trace_fitness,
             aggregate_fitness=agg,
