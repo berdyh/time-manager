@@ -242,3 +242,42 @@ def test_alias_fk_blocks_canonical_archive_with_aliases(
             conn.execute("DELETE FROM vocabulary WHERE activity_name = 'exercise'")
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# add_canonical (T-VOC-03)
+# ---------------------------------------------------------------------------
+
+
+def test_add_canonical_inserts_new_entry(repo: VocabularyRepository) -> None:
+    """add_canonical inserts a new active entry with vocab_v1 version."""
+    entry = repo.add_canonical("yoga", "Stretching/relaxation practice")
+    assert entry.activity_name == "yoga"
+    assert entry.description == "Stretching/relaxation practice"
+    assert entry.status == "active"
+    assert entry.vocab_version == "vocab_v1"
+    assert entry.added_at  # non-empty timestamp
+
+    # Verify it's queryable through normal read methods
+    fetched = repo.get("yoga")
+    assert fetched is not None
+    assert fetched.activity_name == "yoga"
+
+
+def test_add_canonical_rejects_duplicate(repo: VocabularyRepository) -> None:
+    """Adding the same activity_name twice raises ValueError."""
+    repo.add_canonical("yoga")
+    with pytest.raises(ValueError, match="activity already exists: yoga"):
+        repo.add_canonical("yoga")
+
+
+def test_add_canonical_rejects_uppercase(repo: VocabularyRepository) -> None:
+    """activity_name with uppercase letters raises ValueError."""
+    with pytest.raises(ValueError, match="lowercase"):
+        repo.add_canonical("YOGA")
+
+
+def test_add_canonical_rejects_empty(repo: VocabularyRepository) -> None:
+    """Empty activity_name raises ValueError."""
+    with pytest.raises(ValueError, match="must not be empty"):
+        repo.add_canonical("")
