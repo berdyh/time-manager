@@ -25,6 +25,7 @@ __all__ = [
     "Goal",
     "Status",
     "ulid",
+    "validate_priority",
 ]
 
 # Status is a type alias; the literal strings are the canonical values.
@@ -86,7 +87,11 @@ def _validate_status(value: str) -> str:
     return value
 
 
-def _validate_priority(value: int | None) -> int | None:
+def validate_priority(value: int | None) -> int | None:
+    """Validate that *value* is ``None`` or an integer in ``[1, 3]``.
+
+    Raises ``ValueError`` if the constraint is violated.
+    """
     if value is None:
         return None
     if not isinstance(value, int) or not (1 <= value <= 3):
@@ -94,6 +99,10 @@ def _validate_priority(value: int | None) -> int | None:
             f"priority must be an integer in [1, 3] or None, got {value!r}"
         )
     return value
+
+
+# Backward-compatible private alias.
+_validate_priority = validate_priority
 
 
 @dataclass
