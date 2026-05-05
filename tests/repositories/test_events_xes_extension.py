@@ -447,3 +447,42 @@ def test_derive_case_date_invalid_raises() -> None:
 def test_derive_case_date_empty_raises() -> None:
     with pytest.raises(ValueError, match="invalid timestamp"):
         _derive_case_date("")
+
+
+# ---------------------------------------------------------------------------
+# _derive_case_date — new contract tests (space separator + impossible dates)
+# ---------------------------------------------------------------------------
+
+
+def test_derive_case_date_accepts_space_separator() -> None:
+    """SQLite's datetime('now') produces 'YYYY-MM-DD HH:MM:SS' — must be accepted."""
+    assert _derive_case_date("2026-05-05 10:00:00") == "2026-05-05"
+
+
+def test_derive_case_date_rejects_impossible_month() -> None:
+    """Month 13 passes the digit-width check but fromisoformat must reject it."""
+    with pytest.raises(ValueError, match="invalid calendar date"):
+        _derive_case_date("2026-13-45")
+
+
+def test_derive_case_date_rejects_zero_month() -> None:
+    """Month 0 is not a valid calendar month."""
+    with pytest.raises(ValueError, match="invalid calendar date"):
+        _derive_case_date("2026-00-15")
+
+
+def test_derive_case_date_rejects_zero_day() -> None:
+    """Day 0 is not a valid calendar day."""
+    with pytest.raises(ValueError, match="invalid calendar date"):
+        _derive_case_date("2026-05-00")
+
+
+def test_derive_case_date_rejects_zero_year() -> None:
+    """Year 0 is rejected by Python's datetime (must be 1–9999).
+
+    ISO 8601 allows year 0 (proleptic Gregorian year 0 = 1 BC), but Python's
+    ``datetime.fromisoformat`` raises ValueError for it.  We document the
+    chosen behaviour: _derive_case_date raises ValueError for '0000-01-01'.
+    """
+    with pytest.raises(ValueError, match="invalid calendar date"):
+        _derive_case_date("0000-01-01")
