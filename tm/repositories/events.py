@@ -7,8 +7,15 @@ Design notes:
 - Opens a fresh ``sqlite3.Connection`` per call (no shared long-lived connection).
 - ``advances_goal`` is stored as a soft FK (TEXT column, no REFERENCES constraint).
   Application-layer validation ensures the referenced goal exists before insert.
-  The formal REFERENCES goals(goal_id) FK will be added by T-PM-01 when it
-  rebuilds the events table for XES extension.
+  The formal REFERENCES goals(goal_id) FK + table rebuild is deferred to a
+  future infrastructure task that modifies the migration runner to support a
+  pre-txn pragma kind (since SQLite ALTER limitations require
+  ``PRAGMA foreign_keys=OFF`` outside any transaction).
+- ``case_goal_id`` is also a soft FK to ``goals(goal_id)`` — validated the same way.
+  Note: ``case_goal_id`` (case-lens identifier for goal-pursuit cases) and
+  ``advances_goal`` (per-event tag of which goal this contributes toward) are
+  orthogonal — an event may legitimately tag-as-advancing one goal while being
+  part of a different goal-pursuit case lens.
 - ``attributes`` are round-tripped via JSON (``attributes_json`` column).
 """
 
@@ -30,6 +37,29 @@ def _open_conn(db_path: str) -> sqlite3.Connection:
     return conn
 
 
+def _derive_case_date(timestamp_iso: str) -> str:
+    """Derive the ``case_date`` (YYYY-MM-DD) prefix from an ISO timestamp.
+
+    Accepts either a full ISO 8601 timestamp like ``2026-05-05T10:00:00Z``
+    (returns ``2026-05-05``) or a bare date like ``2026-05-05`` (returns
+    itself).  Raises ``ValueError`` for malformed input so that callers never
+    silently store an empty case_date.
+
+    The validation is intentionally minimal: we require a ``YYYY-MM-DD`` prefix
+    where year/month/day are all numeric.  This avoids importing the heavier
+    ``datetime.fromisoformat`` parser while still catching obvious garbage.
+    """
+    if not isinstance(timestamp_iso, str) or not timestamp_iso:
+        raise ValueError(f"invalid timestamp for case_date derivation: {timestamp_iso!r}")
+    head = timestamp_iso.split("T", 1)[0]
+    parts = head.split("-")
+    if len(parts) != 3 or not all(p.isdigit() for p in parts):
+        raise ValueError(f"invalid timestamp for case_date derivation: {timestamp_iso!r}")
+    if len(parts[0]) != 4 or len(parts[1]) != 2 or len(parts[2]) != 2:
+        raise ValueError(f"invalid timestamp for case_date derivation: {timestamp_iso!r}")
+    return head
+
+
 def _row_to_event(row: sqlite3.Row) -> dict[str, Any]:
     out: dict[str, Any] = {
         "event_id": row["event_id"],
@@ -41,6 +71,10 @@ def _row_to_event(row: sqlite3.Row) -> dict[str, Any]:
         "extractor_version": row["extractor_version"],
         "created_at": row["created_at"],
         "advances_goal": row["advances_goal"],
+        "vocab_version": row["vocab_version"],
+        "schema_version": row["schema_version"],
+        "case_date": row["case_date"],
+        "case_goal_id": row["case_goal_id"],
     }
     raw = row["attributes_json"] or "{}"
     try:
@@ -58,8 +92,8 @@ class EventsRepository:
     db_path:
         Path to the SQLite database file, or ``":memory:"`` for tests.  The
         caller is responsible for having applied migrations before using the
-        repository (the ``events`` table with the ``advances_goal`` column from
-        migration 0005 must exist).
+        repository (the ``events`` table with the XES columns from migration
+        0006 must exist).
     """
 
     def __init__(self, db_path: Path | str) -> None:
@@ -81,6 +115,10 @@ class EventsRepository:
         attributes: dict[str, Any] | None = None,
         extractor_version: str = "v0",
         advances_goal: str | None = None,
+        vocab_version: str | None = None,
+        schema_version: str = "v1",
+        case_date: str | None = None,
+        case_goal_id: str | None = None,
     ) -> None:
         """Insert one event row.
 
@@ -106,10 +144,31 @@ class EventsRepository:
             Optional goal_id this event contributes toward.  If provided, the
             goal must already exist in the ``goals`` table; otherwise
             :exc:`ValueError` is raised.
+        vocab_version:
+            Optional version tag of the activity vocabulary in use when this
+            event was emitted.  Pre-T-VOC-* events have no version tag.
+        schema_version:
+            XES schema version this event conforms to.  Defaults to ``"v1"``.
+        case_date:
+            Date-portion of the workday case lens.  When omitted, derived from
+            ``timestamp`` via :func:`_derive_case_date`.  A malformed
+            ``timestamp`` raises :exc:`ValueError` *before* INSERT to prevent
+            silently storing an empty sentinel for valid events.
+        case_goal_id:
+            Optional goal_id identifying the goal-pursuit case lens.  If
+            provided, the goal must exist (same soft-FK semantics as
+            ``advances_goal``).  Note that ``advances_goal`` and
+            ``case_goal_id`` are orthogonal: they need not refer to the same
+            goal.
         """
         if attributes is not None and not isinstance(attributes, dict):
             raise TypeError("'attributes' must be a dict if provided")
         attributes_json = json.dumps(attributes or {}, sort_keys=True, default=str)
+
+        # Resolve case_date BEFORE opening the connection so a malformed
+        # timestamp cannot leave a row with case_date='' from a partial INSERT.
+        if case_date is None:
+            case_date = _derive_case_date(timestamp)
 
         conn = _open_conn(self._db_path)
         try:
@@ -119,12 +178,19 @@ class EventsRepository:
                 ).fetchone()
                 if row is None:
                     raise ValueError(f"unknown goal: {advances_goal!r}")
+            if case_goal_id is not None:
+                row = conn.execute(
+                    "SELECT 1 FROM goals WHERE goal_id = ?", (case_goal_id,)
+                ).fetchone()
+                if row is None:
+                    raise ValueError(f"unknown goal: {case_goal_id!r}")
 
             conn.execute(
                 "INSERT INTO events ("
                 "event_id, case_id, activity, timestamp, lifecycle, "
-                "resource, attributes_json, extractor_version, advances_goal"
-                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "resource, attributes_json, extractor_version, advances_goal, "
+                "vocab_version, schema_version, case_date, case_goal_id"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     event_id,
                     case_id,
@@ -135,6 +201,10 @@ class EventsRepository:
                     attributes_json,
                     extractor_version,
                     advances_goal,
+                    vocab_version,
+                    schema_version,
+                    case_date,
+                    case_goal_id,
                 ),
             )
             conn.commit()
@@ -153,6 +223,10 @@ class EventsRepository:
         until: str | None = None,
         activity: str | None = None,
         advances_goal: str | None = None,
+        vocab_version: str | None = None,
+        schema_version: str | None = None,
+        case_date: str | None = None,
+        case_goal_id: str | None = None,
         limit: int | None = None,
     ) -> list[dict[str, Any]]:
         """Return events matching the given filters.
@@ -169,6 +243,14 @@ class EventsRepository:
             Filter by exact activity label.
         advances_goal:
             Filter by goal_id in ``advances_goal`` column.
+        vocab_version:
+            Filter by ``vocab_version`` column.
+        schema_version:
+            Filter by ``schema_version`` column.
+        case_date:
+            Filter by ``case_date`` column (workday case lens).
+        case_goal_id:
+            Filter by ``case_goal_id`` column (goal-pursuit case lens).
         limit:
             Maximum number of rows to return.
         """
@@ -190,10 +272,23 @@ class EventsRepository:
         if advances_goal is not None:
             clauses.append("advances_goal = ?")
             params.append(advances_goal)
+        if vocab_version is not None:
+            clauses.append("vocab_version = ?")
+            params.append(vocab_version)
+        if schema_version is not None:
+            clauses.append("schema_version = ?")
+            params.append(schema_version)
+        if case_date is not None:
+            clauses.append("case_date = ?")
+            params.append(case_date)
+        if case_goal_id is not None:
+            clauses.append("case_goal_id = ?")
+            params.append(case_goal_id)
 
         sql = (
             "SELECT event_id, case_id, activity, timestamp, lifecycle, "
-            "resource, attributes_json, extractor_version, created_at, advances_goal "
+            "resource, attributes_json, extractor_version, created_at, advances_goal, "
+            "vocab_version, schema_version, case_date, case_goal_id "
             "FROM events"
         )
         if clauses:
@@ -231,3 +326,44 @@ class EventsRepository:
             conn.close()
 
         return int(row[0]) if row is not None else 0
+
+    def list_distinct_case_dates(
+        self,
+        *,
+        since: str | None = None,
+        until: str | None = None,
+    ) -> list[str]:
+        """Return distinct ``case_date`` values in ``[since, until]``, sorted ASC.
+
+        Empty-string ``case_date`` values (the unset sentinel) are excluded.
+        Consumers who care about backfilled events only should rely on this
+        helper rather than scanning the column directly.
+
+        Parameters
+        ----------
+        since:
+            Lower bound (inclusive) on ``case_date``.
+        until:
+            Upper bound (inclusive) on ``case_date``.
+        """
+        clauses: list[str] = ["case_date <> ''"]
+        params: list[Any] = []
+        if since is not None:
+            clauses.append("case_date >= ?")
+            params.append(since)
+        if until is not None:
+            clauses.append("case_date <= ?")
+            params.append(until)
+
+        sql = (
+            "SELECT DISTINCT case_date FROM events WHERE "
+            + " AND ".join(clauses)
+            + " ORDER BY case_date ASC"
+        )
+
+        conn = _open_conn(self._db_path)
+        try:
+            rows = conn.execute(sql, params).fetchall()
+        finally:
+            conn.close()
+        return [str(r["case_date"]) for r in rows]
