@@ -15,6 +15,7 @@ Tests cover:
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from pathlib import Path
 
@@ -281,3 +282,121 @@ def test_add_canonical_rejects_empty(repo: VocabularyRepository) -> None:
     """Empty activity_name raises ValueError."""
     with pytest.raises(ValueError, match="must not be empty"):
         repo.add_canonical("")
+
+
+# ---------------------------------------------------------------------------
+# db_path @property (T-VOC-01-polish AC1)
+# ---------------------------------------------------------------------------
+
+
+def test_db_path_property_returns_path(db_path: Path) -> None:
+    """VocabularyRepository.db_path returns the path supplied at construction."""
+    repo = VocabularyRepository(db_path)
+    assert str(repo.db_path) == str(db_path)
+
+
+def test_db_path_is_readonly(db_path: Path) -> None:
+    """db_path is a read-only @property; assignment must raise AttributeError."""
+    repo = VocabularyRepository(db_path)
+    with pytest.raises(AttributeError):
+        repo.db_path = db_path  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
+# add_alias case-normalization (T-VOC-01-polish AC2 / AC3)
+# ---------------------------------------------------------------------------
+
+
+def test_add_alias_lowercases_variant(repo: VocabularyRepository) -> None:
+    """Mixed-case free_text_variant is lowercased before storage.
+
+    Regression for case-asymmetry bug: add_alias('GymSession', 'exercise')
+    followed by resolve('gymsession') must return 'exercise'.
+    """
+    repo.seed_starter_vocabulary()
+    repo.add_alias("GymSession", "exercise")
+
+    # resolve() lowercases its input, so 'gymsession' must now hit the alias.
+    assert repo.resolve("gymsession") == "exercise"
+    # resolve() also normalizes mixed-case input directly.
+    assert repo.resolve("GymSession") == "exercise"
+
+
+def test_add_alias_strips_whitespace(repo: VocabularyRepository) -> None:
+    """Leading/trailing whitespace is stripped from free_text_variant."""
+    repo.seed_starter_vocabulary()
+    repo.add_alias("  yoga  ", "exercise")
+    assert repo.resolve("yoga") == "exercise"
+
+
+def test_add_alias_rejects_empty_after_strip(repo: VocabularyRepository) -> None:
+    """Whitespace-only free_text_variant raises ValueError after strip."""
+    repo.seed_starter_vocabulary()
+    with pytest.raises(ValueError, match="non-empty after strip"):
+        repo.add_alias("   ", "exercise")
+
+
+# ---------------------------------------------------------------------------
+# ISO-T-Z timestamp format (T-VOC-01-polish AC4)
+# ---------------------------------------------------------------------------
+
+_ISO_TZ_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+
+
+def test_seed_starter_vocabulary_uses_iso_t_z_format(db_path: Path) -> None:
+    """seed_starter_vocabulary() persists added_at in ISO-T-Z format."""
+    repo = VocabularyRepository(db_path)
+    repo.seed_starter_vocabulary()
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        rows = conn.execute("SELECT added_at FROM vocabulary").fetchall()
+    finally:
+        conn.close()
+
+    assert rows, "Expected at least one vocabulary row"
+    for (added_at,) in rows:
+        assert _ISO_TZ_RE.match(added_at), (
+            f"added_at {added_at!r} does not match ISO-T-Z pattern"
+        )
+
+
+def test_add_canonical_uses_iso_t_z_format(db_path: Path) -> None:
+    """add_canonical() persists added_at in ISO-T-Z format."""
+    repo = VocabularyRepository(db_path)
+    entry = repo.add_canonical("yoga")
+
+    assert _ISO_TZ_RE.match(entry.added_at), (
+        f"added_at {entry.added_at!r} does not match ISO-T-Z pattern"
+    )
+
+    # Cross-check via raw SQL.
+    conn = sqlite3.connect(str(db_path))
+    try:
+        row = conn.execute(
+            "SELECT added_at FROM vocabulary WHERE activity_name = 'yoga'"
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row is not None
+    assert _ISO_TZ_RE.match(row[0]), f"Raw added_at {row[0]!r} does not match ISO-T-Z"
+
+
+def test_add_alias_uses_iso_t_z_format(db_path: Path) -> None:
+    """add_alias() persists created_at in ISO-T-Z format."""
+    repo = VocabularyRepository(db_path)
+    repo.seed_starter_vocabulary()
+    repo.add_alias("gym", "exercise")
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        row = conn.execute(
+            "SELECT created_at FROM aliases WHERE free_text_variant = 'gym'"
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert row is not None, "Alias row not found"
+    assert _ISO_TZ_RE.match(row[0]), (
+        f"created_at {row[0]!r} does not match ISO-T-Z pattern"
+    )
