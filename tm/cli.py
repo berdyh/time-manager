@@ -3,10 +3,12 @@ from __future__ import annotations
 import typer
 
 from tm import __version__
+from tm.commands.daemon import daemon_app
 from tm.commands.goal import goal_app
 from tm.commands.vocab import vocab_app
 
 app = typer.Typer(help="tm — behavioral time manager CLI.")
+app.add_typer(daemon_app, name="daemon")
 app.add_typer(goal_app, name="goal")
 app.add_typer(vocab_app, name="vocab")
 
