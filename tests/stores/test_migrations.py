@@ -3,48 +3,38 @@
 from __future__ import annotations
 
 import re
-import shutil
 from pathlib import Path
 
 import pytest
 
 from tm.store import MigrationIntegrityError, Store
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-REAL_MIGRATIONS = REPO_ROOT / "migrations"
-
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
-def _copy_migrations(dst: Path) -> Path:
-    dst.mkdir(parents=True, exist_ok=True)
-    for entry in REAL_MIGRATIONS.iterdir():
-        if entry.suffix == ".sql":
-            shutil.copy2(entry, dst / entry.name)
-    return dst
-
-
-def test_applies_pending_on_empty_db(tmp_path: Path) -> None:
+def test_applies_pending_on_empty_db(tmp_path: Path, stub_migrations_dir: Path) -> None:
     db = tmp_path / "tm.db"
-    s = Store(db, migrations_dir=REAL_MIGRATIONS)
+    s = Store(db, migrations_dir=stub_migrations_dir)
     applied = s.apply_pending_migrations()
     assert applied == [1]
     assert s.applied_migrations() == [1]
     s.close()
 
 
-def test_idempotent_second_apply(tmp_path: Path) -> None:
+def test_idempotent_second_apply(tmp_path: Path, stub_migrations_dir: Path) -> None:
     db = tmp_path / "tm.db"
-    s = Store(db, migrations_dir=REAL_MIGRATIONS)
+    s = Store(db, migrations_dir=stub_migrations_dir)
     assert s.apply_pending_migrations() == [1]
     assert s.apply_pending_migrations() == []
     assert s.applied_migrations() == [1]
     s.close()
 
 
-def test_records_checksum_in_schema_migrations(tmp_path: Path) -> None:
+def test_records_checksum_in_schema_migrations(
+    tmp_path: Path, stub_migrations_dir: Path
+) -> None:
     db = tmp_path / "tm.db"
-    s = Store(db, migrations_dir=REAL_MIGRATIONS)
+    s = Store(db, migrations_dir=stub_migrations_dir)
     s.apply_pending_migrations()
     cur = s._conn.cursor()  # type: ignore[attr-defined]  # test internal access
     cur.execute(
@@ -60,20 +50,19 @@ def test_records_checksum_in_schema_migrations(tmp_path: Path) -> None:
     s.close()
 
 
-def test_detects_checksum_drift(tmp_path: Path) -> None:
-    """Apply, then mutate the migration file in a fixture copy → drift error."""
-    fixture_dir = _copy_migrations(tmp_path / "migrations")
+def test_detects_checksum_drift(tmp_path: Path, stub_migrations_dir: Path) -> None:
+    """Apply stub migration, then mutate the file → drift error."""
     db = tmp_path / "tm.db"
 
-    s = Store(db, migrations_dir=fixture_dir)
+    s = Store(db, migrations_dir=stub_migrations_dir)
     assert s.apply_pending_migrations() == [1]
     s.close()
 
-    # Tamper: append whitespace (changes checksum, keeps SQL valid).
-    target = fixture_dir / "0001_init.sql"
+    # Tamper: append a comment (changes checksum, keeps SQL valid).
+    target = stub_migrations_dir / "0001_stub.sql"
     target.write_text(target.read_text() + "\n-- drift\n")
 
-    s2 = Store(db, migrations_dir=fixture_dir)
+    s2 = Store(db, migrations_dir=stub_migrations_dir)
     with pytest.raises(MigrationIntegrityError) as ei:
         s2.apply_pending_migrations()
     err = ei.value
