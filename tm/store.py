@@ -20,6 +20,10 @@ from tm.stores.sqlite_store import (
     SQLiteStore,
 )
 
+# MigrationIntegrityError is defined below.  It must extend MigrationError so
+# that callers who write ``except MigrationError:`` automatically catch checksum-
+# drift failures without needing to list two exception types.
+
 __all__ = [
     "MigrationError",
     "MigrationIntegrityError",
@@ -30,8 +34,11 @@ __all__ = [
 ]
 
 
-class MigrationIntegrityError(RuntimeError):
+class MigrationIntegrityError(MigrationError):
     """Raised when a previously-applied migration's checksum no longer matches.
+
+    Extends :class:`MigrationError` so that ``except MigrationError:`` catches
+    all migration-runner failures, including checksum-drift detection.
 
     Attributes:
         version: the migration version with mismatched checksum.
