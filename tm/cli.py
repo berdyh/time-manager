@@ -3,13 +3,19 @@ from __future__ import annotations
 import typer
 
 from tm import __version__
+from tm.commands.bottlenecks import bottlenecks_app
 from tm.commands.daemon import daemon_app
+from tm.commands.discover import discover_app
 from tm.commands.goal import goal_app
+from tm.commands.variants import variants_app
 from tm.commands.vocab import vocab_app
 
 app = typer.Typer(help="tm — behavioral time manager CLI.")
+app.add_typer(bottlenecks_app, name="bottlenecks")
 app.add_typer(daemon_app, name="daemon")
+app.add_typer(discover_app, name="discover")
 app.add_typer(goal_app, name="goal")
+app.add_typer(variants_app, name="variants")
 app.add_typer(vocab_app, name="vocab")
 
 
