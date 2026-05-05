@@ -49,14 +49,15 @@ def _derive_case_date(timestamp_iso: str) -> str:
     where year/month/day are all numeric.  This avoids importing the heavier
     ``datetime.fromisoformat`` parser while still catching obvious garbage.
     """
+    msg = f"invalid timestamp for case_date derivation: {timestamp_iso!r}"
     if not isinstance(timestamp_iso, str) or not timestamp_iso:
-        raise ValueError(f"invalid timestamp for case_date derivation: {timestamp_iso!r}")
+        raise ValueError(msg)
     head = timestamp_iso.split("T", 1)[0]
     parts = head.split("-")
     if len(parts) != 3 or not all(p.isdigit() for p in parts):
-        raise ValueError(f"invalid timestamp for case_date derivation: {timestamp_iso!r}")
+        raise ValueError(msg)
     if len(parts[0]) != 4 or len(parts[1]) != 2 or len(parts[2]) != 2:
-        raise ValueError(f"invalid timestamp for case_date derivation: {timestamp_iso!r}")
+        raise ValueError(msg)
     return head
 
 
