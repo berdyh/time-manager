@@ -9,11 +9,13 @@ from pathlib import Path
 import pytest
 
 from tm.store import (
+    MigrationError,
     MigrationIntegrityError,
     MigrationPostTxnError,
     MigrationPragmaError,
     Store,
 )
+from tm.stores.sqlite_store import _parse_migration_header
 
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
@@ -246,13 +248,15 @@ def test_post_txn_pragma_failure_raises_MigrationPostTxnError_but_body_committed
     tmp_path: Path,
     write_migration: Callable[..., Path],
 ) -> None:
-    """Bogus post-txn pragma → exception, but body IS persisted.
+    """post-txn PRAGMA that fails at execution → exception, but body IS persisted.
 
+    The directive payload starts with ``PRAGMA`` (passes parse-time validation)
+    but the SQL is syntactically invalid so SQLite raises at execution time.
     The schema_migrations row IS written and body changes survive.
     """
     mdir = write_migration(
         "0001_bad_post.sql",
-        "-- !post-txn: BOGUS_NOT_VALID_SQL;\n"
+        "-- !post-txn: PRAGMA invalid syntax here;\n"
         "CREATE TABLE was_created (id INTEGER PRIMARY KEY);\n",
     )
     db = tmp_path / "tm.db"
@@ -260,7 +264,7 @@ def test_post_txn_pragma_failure_raises_MigrationPostTxnError_but_body_committed
     with pytest.raises(MigrationPostTxnError) as ei:
         s.apply_pending_migrations()
     assert ei.value.version == 1
-    assert "BOGUS_NOT_VALID_SQL" in ei.value.pragma_sql
+    assert "PRAGMA" in ei.value.pragma_sql
 
     # Body committed: schema_migrations row exists + table is present.
     assert s.applied_migrations() == [1]
@@ -360,4 +364,166 @@ def test_header_parsing_tolerates_utf8_bom(
     s = Store(db, migrations_dir=mdir)
     s.apply_pending_migrations()
     assert _fk_enabled(s) is False
+    s.close()
+
+
+# ---------------------------------------------------------------------------
+# T-FND-08: exception hierarchy, case-sensitivity, PRAGMA payload validation
+# ---------------------------------------------------------------------------
+
+
+def test_MigrationIntegrityError_extends_MigrationError() -> None:
+    """MigrationIntegrityError must be a subclass of MigrationError.
+
+    AC1: ``issubclass(MigrationIntegrityError, MigrationError)`` is True so
+    that ``except MigrationError:`` catches all migration-runner failures.
+    """
+    assert issubclass(MigrationIntegrityError, MigrationError)
+
+
+def test_except_MigrationError_catches_IntegrityError(
+    tmp_path: Path,
+    stub_migrations_dir: Path,
+) -> None:
+    """Checksum drift is catchable via ``except MigrationError:``.
+
+    AC2: Apply a migration, tamper the file so the checksum changes, then
+    confirm the resulting exception is caught by a bare ``except MigrationError``
+    block — not just by ``except RuntimeError`` or ``except MigrationIntegrityError``.
+    """
+    db = tmp_path / "tm.db"
+    s = Store(db, migrations_dir=stub_migrations_dir)
+    assert s.apply_pending_migrations() == [1]
+    s.close()
+
+    target = stub_migrations_dir / "0001_stub.sql"
+    target.write_text(target.read_text() + "\n-- drift\n")
+
+    s2 = Store(db, migrations_dir=stub_migrations_dir)
+    caught: Exception | None = None
+    try:
+        s2.apply_pending_migrations()
+    except MigrationError as exc:
+        caught = exc
+    finally:
+        s2.close()
+
+    assert caught is not None, "expected MigrationError but nothing was raised"
+    assert isinstance(caught, MigrationIntegrityError), (
+        f"expected MigrationIntegrityError, got {type(caught).__name__}"
+    )
+
+
+def test_header_directive_case_sensitivity() -> None:
+    """Uppercase ``-- !PRE-TXN:`` is silently ignored; no directive parsed.
+
+    AC3 / AC4: Directive keywords MUST be lowercase (pre-txn / post-txn).
+    Uppercase variants are not directives — they parse as plain comments.
+    This test asserts that ``_parse_migration_header`` returns empty lists
+    for uppercase-keyword variants, so no PRAGMA side-effect is applied.
+    """
+    sql = "-- !PRE-TXN: PRAGMA foreign_keys=OFF;\nCREATE TABLE x (id INT);\n"
+    pre, post = _parse_migration_header(sql)
+    assert pre == [], f"expected no pre-txn directives, got {pre!r}"
+    assert post == [], f"expected no post-txn directives, got {post!r}"
+
+    # Also verify mixed-case variant is silently ignored.
+    sql_mixed = "-- !Pre-Txn: PRAGMA foreign_keys=OFF;\nCREATE TABLE y (id INT);\n"
+    pre2, post2 = _parse_migration_header(sql_mixed)
+    assert pre2 == []
+    assert post2 == []
+
+
+def test_pre_txn_payload_must_start_with_PRAGMA(
+    tmp_path: Path,
+    write_migration: Callable[..., Path],
+) -> None:
+    """``-- !pre-txn: DROP TABLE ...`` raises MigrationPragmaError at parse time.
+
+    AC5: The parse-time PRAGMA validation runs BEFORE ``BEGIN IMMEDIATE``,
+    so the migration body never executes and no ``schema_migrations`` row is
+    written.  This is distinct from a runtime PRAGMA execution failure.
+    """
+    mdir = write_migration(
+        "0001_bad_pre_payload.sql",
+        "-- !pre-txn: DROP TABLE schema_migrations;\n"
+        "CREATE TABLE should_not_exist (id INTEGER PRIMARY KEY);\n",
+    )
+    db = tmp_path / "tm.db"
+    s = Store(db, migrations_dir=mdir)
+    with pytest.raises(MigrationPragmaError) as ei:
+        s.apply_pending_migrations()
+    err = ei.value
+    assert err.version == 1
+    assert "DROP TABLE" in err.pragma_sql
+
+    # Body must NOT have run; schema_migrations empty, table absent.
+    assert s.applied_migrations() == []
+    cur = s._conn.cursor()  # type: ignore[attr-defined]
+    cur.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='should_not_exist'"
+    )
+    assert cur.fetchone() is None
+    cur.close()
+    s.close()
+
+
+def test_post_txn_payload_must_start_with_PRAGMA(
+    tmp_path: Path,
+    write_migration: Callable[..., Path],
+) -> None:
+    """``-- !post-txn: DROP TABLE ...`` raises MigrationPragmaError at parse time.
+
+    AC6: Parse-time validation also applies to post-txn directives and runs
+    BEFORE ``BEGIN IMMEDIATE``, so the entire migration is aborted: the body
+    never runs and no ``schema_migrations`` row is written.
+
+    Contrast with a runtime post-txn failure (MigrationPostTxnError), where the
+    directive payload starts with ``PRAGMA`` but the SQL fails during execution
+    AFTER the body has been committed.
+    """
+    mdir = write_migration(
+        "0001_bad_post_payload.sql",
+        "-- !post-txn: DROP TABLE schema_migrations;\n"
+        "CREATE TABLE should_not_exist (id INTEGER PRIMARY KEY);\n",
+    )
+    db = tmp_path / "tm.db"
+    s = Store(db, migrations_dir=mdir)
+    with pytest.raises(MigrationPragmaError) as ei:
+        s.apply_pending_migrations()
+    err = ei.value
+    assert err.version == 1
+    assert "DROP TABLE" in err.pragma_sql
+
+    # Body must NOT have run; schema_migrations empty, table absent.
+    assert s.applied_migrations() == []
+    cur = s._conn.cursor()  # type: ignore[attr-defined]
+    cur.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='should_not_exist'"
+    )
+    assert cur.fetchone() is None
+    cur.close()
+    s.close()
+
+
+def test_pre_txn_payload_pragma_lowercase_accepted(
+    tmp_path: Path,
+    write_migration: Callable[..., Path],
+) -> None:
+    """``pragma foreign_keys=OFF`` (lowercase) is accepted and takes effect.
+
+    AC7: The PRAGMA keyword check is case-insensitive on the keyword itself.
+    ``pragma``, ``PRAGMA``, and ``Pragma`` are all valid directive payloads.
+    """
+    mdir = write_migration(
+        "0001_pre_txn_lowercase_pragma.sql",
+        "-- !pre-txn: pragma foreign_keys=OFF;\n"
+        "CREATE TABLE only_table (id INTEGER PRIMARY KEY);\n",
+    )
+    db = tmp_path / "tm.db"
+    s = Store(db, migrations_dir=mdir)
+    s.apply_pending_migrations()
+    # Lowercase ``pragma`` was accepted; FK is now OFF.
+    assert _fk_enabled(s) is False
+    assert s.applied_migrations() == [1]
     s.close()
