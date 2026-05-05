@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from tm.store import (
+    MigrationBodyError,
     MigrationError,
     MigrationIntegrityError,
     MigrationPostTxnError,
@@ -526,4 +527,102 @@ def test_pre_txn_payload_pragma_lowercase_accepted(
     # Lowercase ``pragma`` was accepted; FK is now OFF.
     assert _fk_enabled(s) is False
     assert s.applied_migrations() == [1]
+    s.close()
+
+
+# ---------------------------------------------------------------------------
+# T-FND-09: MigrationBodyError wrap
+# ---------------------------------------------------------------------------
+
+
+def test_MigrationBodyError_extends_MigrationError() -> None:
+    """MigrationBodyError must be a subclass of MigrationError.
+
+    AC1/AC3: ``issubclass(MigrationBodyError, MigrationError)`` is True so
+    that ``except MigrationError:`` catches body-execution failures uniformly.
+    """
+    assert issubclass(MigrationBodyError, MigrationError)
+
+
+def test_body_IntegrityError_wrapped_as_MigrationBodyError(
+    tmp_path: Path,
+    write_migration: Callable[..., Path],
+) -> None:
+    """A UNIQUE-PK violation in the body is wrapped as MigrationBodyError.
+
+    AC4: sqlite3.IntegrityError raised during body execution must become
+    MigrationBodyError (which extends MigrationError), not a raw sqlite3 error.
+    """
+    mdir = write_migration(
+        "0001_integrity.sql",
+        "CREATE TABLE foo (id INTEGER PRIMARY KEY);\n"
+        "INSERT INTO foo VALUES (1);\n"
+        "INSERT INTO foo VALUES (1);\n",  # duplicate PK → IntegrityError
+    )
+    db = tmp_path / "tm.db"
+    s = Store(db, migrations_dir=mdir)
+    with pytest.raises(MigrationBodyError) as ei:
+        s.apply_pending_migrations()
+    assert ei.value.version == 1
+    assert isinstance(ei.value.cause, Exception)
+    # Also verify it is catchable as MigrationError.
+    assert isinstance(ei.value, MigrationError)
+    # Body rolled back: no schema_migrations row.
+    assert s.applied_migrations() == []
+    s.close()
+
+
+def test_body_OperationalError_wrapped_as_MigrationBodyError(
+    tmp_path: Path,
+    write_migration: Callable[..., Path],
+) -> None:
+    """Referencing a nonexistent table in the body → MigrationBodyError.
+
+    AC5: sqlite3.OperationalError raised during body execution must become
+    MigrationBodyError, not a raw sqlite3 error.
+    """
+    mdir = write_migration(
+        "0001_operational.sql",
+        "SELECT * FROM nonexistent_table;\n",
+    )
+    db = tmp_path / "tm.db"
+    s = Store(db, migrations_dir=mdir)
+    with pytest.raises(MigrationBodyError) as ei:
+        s.apply_pending_migrations()
+    assert ei.value.version == 1
+    assert isinstance(ei.value, MigrationError)
+    assert s.applied_migrations() == []
+    s.close()
+
+
+def test_pragma_errors_NOT_wrapped_as_MigrationBodyError(
+    tmp_path: Path,
+    write_migration: Callable[..., Path],
+) -> None:
+    """Pre-txn payload that does not start with PRAGMA → MigrationPragmaError.
+
+    AC6: The parse-time PRAGMA validation fires BEFORE BEGIN IMMEDIATE, so the
+    body never runs. The resulting exception is MigrationPragmaError, NOT
+    MigrationBodyError. They must be mutually exclusive.
+    """
+    mdir = write_migration(
+        "0001_bad_pragma.sql",
+        "-- !pre-txn: DROP TABLE schema_migrations;\n"
+        "CREATE TABLE should_not_exist (id INTEGER PRIMARY KEY);\n",
+    )
+    db = tmp_path / "tm.db"
+    s = Store(db, migrations_dir=mdir)
+    with pytest.raises(MigrationPragmaError):
+        s.apply_pending_migrations()
+    # Confirm NOT a MigrationBodyError.
+    try:
+        s2 = Store(db, migrations_dir=mdir)
+        s2.apply_pending_migrations()
+        s2.close()
+    except MigrationPragmaError:
+        pass  # expected
+    except MigrationBodyError:
+        raise AssertionError(
+            "MigrationBodyError must not be raised for pragma validation errors"
+        ) from None
     s.close()
