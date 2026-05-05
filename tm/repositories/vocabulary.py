@@ -19,9 +19,23 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
 __all__ = ["VocabularyEntry", "VocabularyRepository"]
+
+# ISO 8601 UTC format used throughout this project (mirrors goals.py).
+_ISO_FMT = "%Y-%m-%dT%H:%M:%SZ"
+
+
+def _now_iso() -> str:
+    """Return current UTC time as ISO-8601 with trailing Z.
+
+    DEFAULT (datetime('now')) in migrations/0004_vocab.sql is a fallback;
+    we always pass _now_iso() to keep ISO-T-Z format consistent across project.
+    """
+    return datetime.now(UTC).strftime(_ISO_FMT)
+
 
 # ---------------------------------------------------------------------------
 # Starter data constants
@@ -118,6 +132,11 @@ class VocabularyRepository:
     def __init__(self, db_path: Path | str) -> None:
         self._db_path = str(db_path)
 
+    @property
+    def db_path(self) -> Path | str:
+        """Read-only path to the SQLite database file."""
+        return self._db_path
+
     # ------------------------------------------------------------------
     # Seeding
     # ------------------------------------------------------------------
@@ -138,8 +157,9 @@ class VocabularyRepository:
             total_inserted = 0
             for name in STARTER_VOCABULARY:
                 cursor.execute(
-                    "INSERT OR IGNORE INTO vocabulary (activity_name) VALUES (?)",
-                    (name,),
+                    "INSERT OR IGNORE INTO vocabulary (activity_name, added_at) "
+                    "VALUES (?, ?)",
+                    (name, _now_iso()),
                 )
                 total_inserted += cursor.rowcount
             conn.commit()
@@ -166,9 +186,9 @@ class VocabularyRepository:
             for variant, canonical in STARTER_ALIASES:
                 cursor.execute(
                     "INSERT OR IGNORE INTO aliases "
-                    "(free_text_variant, canonical_activity) "
-                    "VALUES (?, ?)",
-                    (variant, canonical),
+                    "(free_text_variant, canonical_activity, created_at) "
+                    "VALUES (?, ?, ?)",
+                    (variant, canonical, _now_iso()),
                 )
                 total_inserted += cursor.rowcount
             conn.commit()
@@ -261,16 +281,23 @@ class VocabularyRepository:
         Parameters
         ----------
         free_text_variant:
-            The free-text label to recognise (stored as provided; comparison
-            is case-insensitive via :meth:`resolve`).
+            The free-text label to recognise.  Automatically stripped and
+            lowercased before storage so subsequent :meth:`resolve` calls
+            (which lowercase their input) will find the alias regardless of
+            the case supplied by the caller.
         canonical_activity:
             Must already exist in the ``vocabulary`` table.
 
         Raises
         ------
         ValueError
-            If ``canonical_activity`` is not present in the vocabulary.
+            If ``free_text_variant`` is empty after stripping whitespace, or
+            if ``canonical_activity`` is not present in the vocabulary.
         """
+        lower_strip = free_text_variant.strip().lower()
+        if not lower_strip:
+            raise ValueError("free_text_variant must be non-empty after strip")
+
         conn = _open_conn(self._db_path)
         try:
             row = conn.execute(
@@ -284,9 +311,9 @@ class VocabularyRepository:
                 )
             conn.execute(
                 "INSERT OR REPLACE INTO aliases "
-                "(free_text_variant, canonical_activity) "
-                "VALUES (?, ?)",
-                (free_text_variant, canonical_activity),
+                "(free_text_variant, canonical_activity, created_at) "
+                "VALUES (?, ?, ?)",
+                (lower_strip, canonical_activity, _now_iso()),
             )
             conn.commit()
         finally:
@@ -333,9 +360,10 @@ class VocabularyRepository:
         try:
             try:
                 conn.execute(
-                    "INSERT OR ABORT INTO vocabulary (activity_name, description) "
-                    "VALUES (?, ?)",
-                    (activity_name, description),
+                    "INSERT OR ABORT INTO vocabulary "
+                    "(activity_name, description, added_at) "
+                    "VALUES (?, ?, ?)",
+                    (activity_name, description, _now_iso()),
                 )
                 conn.commit()
             except sqlite3.IntegrityError as exc:
