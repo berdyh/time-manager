@@ -14,6 +14,9 @@ from __future__ import annotations
 from typing import Any, Protocol, runtime_checkable
 
 from tm.stores.sqlite_store import (
+    MigrationBodyError as MigrationBodyError,
+)
+from tm.stores.sqlite_store import (
     MigrationError,
     MigrationPostTxnError,
     MigrationPragmaError,
@@ -25,6 +28,7 @@ from tm.stores.sqlite_store import (
 # drift failures without needing to list two exception types.
 
 __all__ = [
+    "MigrationBodyError",
     "MigrationError",
     "MigrationIntegrityError",
     "MigrationPostTxnError",

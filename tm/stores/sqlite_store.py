@@ -113,6 +113,32 @@ class MigrationPostTxnError(MigrationError):
         self.cause = cause
 
 
+class MigrationBodyError(MigrationError):
+    """Raised when a migration body statement fails during execution.
+
+    Wraps ``sqlite3.IntegrityError`` and ``sqlite3.OperationalError`` raised
+    from within the body transaction (e.g. CHECK / FK / UNIQUE violations,
+    or referencing a nonexistent table).  This ensures ``except MigrationError:``
+    catches all migration-runner failures uniformly, including body-execution
+    errors that would otherwise propagate as raw ``sqlite3`` exceptions.
+
+    NOT raised for:
+    - Pre-txn pragma failures (those raise :class:`MigrationPragmaError`).
+    - Post-txn pragma failures (those raise :class:`MigrationPostTxnError`).
+    - Checksum drift (raises :class:`MigrationIntegrityError` via tm.store).
+    - File I/O or parsing errors (not sqlite3 exceptions).
+
+    Attributes:
+        version: migration version whose body statement failed.
+        cause: the underlying ``sqlite3`` error.
+    """
+
+    def __init__(self, version: int, cause: BaseException) -> None:
+        super().__init__(f"migration {version:04d}: body statement failed: {cause!r}")
+        self.version = version
+        self.cause = cause
+
+
 _REQUIRED_EVENT_KEYS: tuple[str, ...] = (
     "event_id",
     "case_id",
@@ -340,21 +366,24 @@ class SQLiteStore:
             # 2-4. Body inside BEGIN IMMEDIATE; on body failure the txn
             #      rolls back and post-txn pragmas DO NOT run (so a failure
             #      isn't masked by a "successful" pragma reset).
-            with self._write_txn() as cur:
-                # executescript would auto-commit; we already own the txn, so
-                # split on semicolons via a simple splitter that respects
-                # single-quoted strings and ``--`` line comments. Sufficient
-                # for DDL-only migrations; if a future migration needs
-                # trigger bodies (BEGIN..END) the splitter will need
-                # extending then — out of scope here.
-                for stmt in _split_sql_statements(sql_text):
-                    if stmt.strip():
-                        cur.execute(stmt)
-                cur.execute(
-                    "INSERT INTO schema_migrations(version, applied_at, checksum) "
-                    "VALUES (?, ?, ?)",
-                    (version, applied_at, checksum),
-                )
+            try:
+                with self._write_txn() as cur:
+                    # executescript would auto-commit; we already own the txn, so
+                    # split on semicolons via a simple splitter that respects
+                    # single-quoted strings and ``--`` line comments. Sufficient
+                    # for DDL-only migrations; if a future migration needs
+                    # trigger bodies (BEGIN..END) the splitter will need
+                    # extending then — out of scope here.
+                    for stmt in _split_sql_statements(sql_text):
+                        if stmt.strip():
+                            cur.execute(stmt)
+                    cur.execute(
+                        "INSERT INTO schema_migrations(version, applied_at, checksum) "
+                        "VALUES (?, ?, ?)",
+                        (version, applied_at, checksum),
+                    )
+            except (sqlite3.IntegrityError, sqlite3.OperationalError) as exc:
+                raise MigrationBodyError(version=version, cause=exc) from exc
             print(
                 f"applied migration {version:04d} ({path.name})",
                 file=sys.stderr,
