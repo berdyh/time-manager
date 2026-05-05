@@ -242,11 +242,11 @@ def test_pre_existing_data_with_invalid_names_aborts_migration(tmp_path: Path) -
     finally:
         conn.close()
 
-    # Applying migration 0008 must fail. The runner does not wrap IntegrityError
-    # in MigrationError — it re-raises the sqlite3 error directly from within
-    # the body transaction. Accept either MigrationError or sqlite3.IntegrityError.
+    # Applying migration 0008 must fail. The runner wraps body IntegrityError
+    # as MigrationBodyError (which extends MigrationError), so catching
+    # MigrationError is sufficient to handle all migration-runner failures.
     s2 = Store(db, migrations_dir=MIGRATIONS_DIR)
-    with pytest.raises((MigrationError, sqlite3.IntegrityError)):
+    with pytest.raises(MigrationError):
         s2.apply_pending_migrations()
     s2.close()
 
@@ -279,3 +279,130 @@ def test_indexes_recreated_after_rebuild(tmp_path: Path) -> None:
     assert "idx_goals_created_at" in index_names, (
         "idx_goals_created_at not found after migration 0008"
     )
+
+
+# ---------------------------------------------------------------------------
+# T-FND-09: migration 0009 tighter whitespace CHECK tests
+# ---------------------------------------------------------------------------
+
+
+def _apply_all_migrations_including_0009(db_path: Path) -> Store:
+    """Apply 0001-0009 from the real migrations dir."""
+    s = Store(db_path, migrations_dir=MIGRATIONS_DIR)
+    s.apply_pending_migrations()
+    return s
+
+
+def test_migration_0009_applies_cleanly(tmp_path: Path) -> None:
+    """Fresh DB with all migrations applied; schema_migrations records v9."""
+    db = tmp_path / "tm.db"
+    s = _apply_all_migrations_including_0009(db)
+    applied = s.applied_migrations()
+    s.close()
+    assert 9 in applied, f"Expected version 9 in applied migrations, got: {applied}"
+
+
+def test_goals_name_tab_rejected_post_migration_0009(tmp_path: Path) -> None:
+    """After migration 0009, inserting a goal with name='\\t' raises IntegrityError."""
+    db = tmp_path / "tm.db"
+    s = _apply_all_migrations_including_0009(db)
+    s.close()
+
+    conn = sqlite3.connect(str(db))
+    try:
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO goals (goal_id, name, status, created_at) "
+                "VALUES (?, ?, 'active', datetime('now'))",
+                (make_ulid(), "\t"),
+            )
+    finally:
+        conn.close()
+
+
+def test_goals_name_newline_rejected_post_migration_0009(tmp_path: Path) -> None:
+    """After migration 0009, inserting a goal with name='\\n' raises IntegrityError."""
+    db = tmp_path / "tm.db"
+    s = _apply_all_migrations_including_0009(db)
+    s.close()
+
+    conn = sqlite3.connect(str(db))
+    try:
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO goals (goal_id, name, status, created_at) "
+                "VALUES (?, ?, 'active', datetime('now'))",
+                (make_ulid(), "\n"),
+            )
+    finally:
+        conn.close()
+
+
+def test_goals_name_carriage_return_rejected_post_migration_0009(
+    tmp_path: Path,
+) -> None:
+    """After migration 0009, inserting a goal with name='\\r' raises IntegrityError."""
+    db = tmp_path / "tm.db"
+    s = _apply_all_migrations_including_0009(db)
+    s.close()
+
+    conn = sqlite3.connect(str(db))
+    try:
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO goals (goal_id, name, status, created_at) "
+                "VALUES (?, ?, 'active', datetime('now'))",
+                (make_ulid(), "\r"),
+            )
+    finally:
+        conn.close()
+
+
+def test_goals_name_mixed_whitespace_rejected_post_migration_0009(
+    tmp_path: Path,
+) -> None:
+    """After migration 0009, a name of only mixed whitespace raises IntegrityError."""
+    db = tmp_path / "tm.db"
+    s = _apply_all_migrations_including_0009(db)
+    s.close()
+
+    conn = sqlite3.connect(str(db))
+    try:
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO goals (goal_id, name, status, created_at) "
+                "VALUES (?, ?, 'active', datetime('now'))",
+                (make_ulid(), " \t\n\r "),
+            )
+    finally:
+        conn.close()
+
+
+def test_goals_name_with_internal_whitespace_accepted_post_migration_0009(
+    tmp_path: Path,
+) -> None:
+    """After migration 0009, a name with internal tabs/newlines is accepted.
+
+    trim() only strips leading/trailing characters; internal whitespace is
+    preserved so 'hello\\tworld' has non-zero trimmed length and passes the CHECK.
+    """
+    db = tmp_path / "tm.db"
+    s = _apply_all_migrations_including_0009(db)
+    s.close()
+
+    conn = sqlite3.connect(str(db))
+    try:
+        goal_id = make_ulid()
+        conn.execute(
+            "INSERT INTO goals (goal_id, name, status, created_at) "
+            "VALUES (?, ?, 'active', datetime('now'))",
+            (goal_id, "hello\tworld"),
+        )
+        conn.commit()
+        row = conn.execute(
+            "SELECT name FROM goals WHERE goal_id = ?", (goal_id,)
+        ).fetchone()
+        assert row is not None
+        assert row[0] == "hello\tworld"
+    finally:
+        conn.close()
