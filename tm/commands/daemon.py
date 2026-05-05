@@ -191,7 +191,7 @@ def status(
         client = DaemonClient(resolved_socket, timeout=2.0)
         client.call("ping")
     except Exception as exc:
-        typer.echo(f"daemon: unreachable ({exc}); cleaning up if stale", err=True)
+        typer.echo(f"daemon: unreachable ({exc})", err=True)
         raise typer.Exit(1) from None
 
     # Ping succeeded — daemon is alive.
