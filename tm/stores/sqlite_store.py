@@ -53,12 +53,21 @@ class MigrationError(RuntimeError):
 
 
 class MigrationPragmaError(MigrationError):
-    """Raised when a ``-- !pre-txn:`` pragma fails before BEGIN IMMEDIATE.
+    """Raised for ``-- !pre-txn:`` directive failures — either at parse time
+    (payload does not start with ``PRAGMA``) or at execution time (the pragma
+    SQL itself fails before ``BEGIN IMMEDIATE``).
+
+    When raised at **parse time** (payload validation), the migration body has
+    not started and no ``schema_migrations`` row is written.
+
+    When raised at **execution time** (pragma SQL failure), same: the body
+    never ran and no row is written.
 
     Attributes:
-        version: migration version whose pre-txn pragma failed.
-        pragma_sql: the offending pragma statement.
-        cause: the underlying ``sqlite3`` error.
+        version: migration version whose pre-txn directive failed.
+        pragma_sql: the offending directive payload string.
+        cause: the underlying error (``ValueError`` for parse-time, ``sqlite3``
+               error for execution-time failures).
     """
 
     def __init__(
@@ -293,6 +302,25 @@ class SQLiteStore:
                 continue
             sql_text = body.decode("utf-8")
             pre_txn_stmts, post_txn_stmts = _parse_migration_header(sql_text)
+
+            # Parse-time defence: every directive payload MUST start with
+            # PRAGMA (case-insensitive). A non-PRAGMA payload (e.g.
+            # ``-- !pre-txn: DROP TABLE schema_migrations;``) is rejected here,
+            # BEFORE any BEGIN IMMEDIATE, so the body never runs and no
+            # schema_migrations row is written.
+            # This is parse-time validation; contrast with runtime
+            # MigrationPragmaError / MigrationPostTxnError which fire when a
+            # syntactically valid PRAGMA statement fails during execution.
+            for _stmt in pre_txn_stmts + post_txn_stmts:
+                if not _stmt.lstrip().upper().startswith("PRAGMA"):
+                    raise MigrationPragmaError(
+                        version=version,
+                        pragma_sql=_stmt,
+                        cause=ValueError(
+                            f"directive payload must start with PRAGMA: {_stmt!r}"
+                        ),
+                    )
+
             applied_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
             # 1. Pre-txn pragmas run on the same connection BEFORE BEGIN
@@ -476,6 +504,10 @@ def _parse_migration_header(sql_text: str) -> tuple[list[str], list[str]]:
     Tolerates a leading UTF-8 BOM and arbitrary leading whitespace on each
     header line. Multiple pre-txn or post-txn directives are allowed and are
     returned in source order.
+
+    Directive keywords MUST be lowercase: pre-txn / post-txn.  Uppercase
+    variants (e.g. ``-- !PRE-TXN:``) are silently treated as plain comments
+    and are NOT parsed as directives.
 
     Returns:
         ``(pre_txn_stmts, post_txn_stmts)`` — each pragma SQL statement with
