@@ -25,10 +25,15 @@ def test_version() -> None:
     )
 
 
-def test_init_stub() -> None:
-    """``tm init`` exits 0 and prints the stub message."""
-    result = runner.invoke(app, ["init"])
+def test_init_smoke(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """``tm init --db-path <tmp>`` exits 0 and prints the bootstrap summary.
+
+    Comprehensive coverage lives in tests/commands/test_init_cli.py; this
+    keeps a fast CLI smoke test alongside ``--version``.
+    """
+    db_path = tmp_path / "tm.db"
+    result = runner.invoke(app, ["init", "--db-path", str(db_path)])
     assert result.exit_code == 0, (
         f"unexpected exit code: {result.exit_code}\n{result.output}"
     )
-    assert "tm init not yet implemented" in result.stdout
+    assert f"tm init: db={db_path}" in result.stdout
