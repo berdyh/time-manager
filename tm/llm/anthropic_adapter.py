@@ -33,9 +33,11 @@ from typing import TYPE_CHECKING, Any
 
 from tm.llm.client import (
     ChatResponse,
+    ExtractResponse,
     Message,
     ToolCall,
     ToolCallResponse,
+    Usage,
 )
 from tm.llm.errors import LLMClientError
 
@@ -129,13 +131,13 @@ class AnthropicAdapter:
         messages: list[Message],
         *,
         schema: dict[str, Any],
-    ) -> dict[str, Any]:
+    ) -> ExtractResponse:
         """Force the model to emit a structured object matching ``schema``.
 
         Implementation: register a synthetic single-tool toolset with the
         caller-provided JSON schema as ``input_schema`` and force the model
         to call it via ``tool_choice``. Parse the resulting ``tool_use`` block
-        back into a plain ``dict``.
+        back into a plain ``dict`` carried on :class:`ExtractResponse`.
         """
         tool_def: dict[str, Any] = {
             "name": EXTRACT_TOOL_NAME,
@@ -161,7 +163,7 @@ class AnthropicAdapter:
                         "extract: tool_use block had non-dict input "
                         f"(got {type(inp).__name__})"
                     )
-                return inp
+                return ExtractResponse(data=inp, usage=_read_optional_usage(sdk_msg))
         raise LLMClientError(
             "extract: model returned no tool_use block; "
             f"stop_reason={_get_attr(sdk_msg, 'stop_reason', default=None)!r}"
@@ -263,3 +265,20 @@ def _read_usage(sdk_msg: Any) -> tuple[int, int]:
         return (int(in_t), int(out_t))
     except (TypeError, ValueError):
         return (0, 0)
+
+
+_MISSING = object()
+
+
+def _read_optional_usage(sdk_msg: Any) -> Usage | None:
+    usage = _get_attr(sdk_msg, "usage", default=None)
+    if usage is None:
+        return None
+    in_t = _get_attr(usage, "input_tokens", default=_MISSING)
+    out_t = _get_attr(usage, "output_tokens", default=_MISSING)
+    if in_t is _MISSING or out_t is _MISSING:
+        return None
+    try:
+        return Usage(input_tokens=int(in_t), output_tokens=int(out_t))
+    except (TypeError, ValueError):
+        return None

@@ -32,6 +32,7 @@ from tm.agents import (
     DebriefValidationError,
     ExtractedEvent,
 )
+from tm.llm.client import ExtractResponse, Usage
 from tm.llm.cost_meter import CostMeter
 from tm.llm.errors import CostCapExceeded
 from tm.repositories.events import EventsRepository
@@ -98,6 +99,17 @@ def _canned_extract(
     }
 
 
+_EXTRACT_USAGE = Usage(input_tokens=123, output_tokens=45)
+
+
+def _extract_response(
+    data: Any,
+    *,
+    usage: Usage | None = _EXTRACT_USAGE,
+) -> ExtractResponse:
+    return ExtractResponse(data=data, usage=usage)  # type: ignore[arg-type]
+
+
 def _make_agent(
     *,
     vocab_repo: VocabularyRepository,
@@ -118,7 +130,7 @@ def _make_agent(
     if extract_side_effect is not None:
         debrief_llm.extract.side_effect = extract_side_effect
     elif extract_return is not None:
-        debrief_llm.extract.return_value = extract_return
+        debrief_llm.extract.return_value = _extract_response(extract_return)
 
     vocab_llm = Mock()
     aligner = VocabAligner(vocab_repo, vocab_llm)
@@ -718,6 +730,34 @@ def test_cost_recorded_post_call(
     assert after > before
 
 
+def test_cost_record_uses_extract_response_usage(
+    vocab_repo: VocabularyRepository,
+    goals_repo: GoalsRepository,
+    events_repo: EventsRepository,
+    cost_meter: CostMeter,
+) -> None:
+    extract = _canned_extract(
+        events=[],
+        summary={"planned_tasks_completed": 0, "planned_tasks_total": 0},
+    )
+    cost_meter.record = Mock(wraps=cost_meter.record)  # type: ignore[method-assign]
+    agent, _, _ = _make_agent(
+        vocab_repo=vocab_repo,
+        goals_repo=goals_repo,
+        events_repo=events_repo,
+        cost_meter=cost_meter,
+        extract_return=extract,
+    )
+
+    agent.extract_and_persist("Some transcript.", case_date="2026-05-05")
+
+    cost_meter.record.assert_called_once()
+    kwargs = cost_meter.record.call_args.kwargs
+    assert kwargs["input_tokens"] == _EXTRACT_USAGE.input_tokens
+    assert kwargs["output_tokens"] == _EXTRACT_USAGE.output_tokens
+    assert kwargs["output_tokens"] > 0
+
+
 # ---------------------------------------------------------------------------
 # Validation
 # ---------------------------------------------------------------------------
@@ -996,7 +1036,7 @@ def test_two_extract_and_persist_calls_same_case_date_does_NOT_create_two_summar
     )
 
     agent.extract_and_persist("First call", case_date="2026-05-05")
-    debrief_llm.extract.return_value = extract_b
+    debrief_llm.extract.return_value = _extract_response(extract_b)
 
     with pytest.raises(DebriefValidationError):
         agent.extract_and_persist("Second call", case_date="2026-05-05")
@@ -1033,7 +1073,7 @@ def test_summary_invariant_max_one_per_case_date_across_multiple_dates(
     )
 
     agent.extract_and_persist("Day A", case_date="2026-05-04")
-    debrief_llm.extract.return_value = extract_b
+    debrief_llm.extract.return_value = _extract_response(extract_b)
     agent.extract_and_persist("Day B", case_date="2026-05-05")
 
     rows_a = events_repo.query_events(case_date="2026-05-04", activity=SUMMARY_ACTIVITY)

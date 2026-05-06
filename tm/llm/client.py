@@ -10,7 +10,8 @@ Three operations are exposed:
   :class:`ChatResponse` carrying the assistant text plus token usage so the
   cost meter can record the call.
 * :meth:`LLMClient.extract` — structured extraction against a JSON schema
-  (provider-side tool-use under the hood). Returns the parsed dict.
+  (provider-side tool-use under the hood). Returns the parsed dict plus
+  token usage when the adapter can compute it.
 * :meth:`LLMClient.tool_call` — generic tool-use round-trip. Returns a
   :class:`ToolCallResponse` with zero or more parsed
   :class:`ToolCall` blocks plus any free-form text.
@@ -27,10 +28,12 @@ from typing import Any, Protocol, runtime_checkable
 
 __all__ = [
     "ChatResponse",
+    "ExtractResponse",
     "LLMClient",
     "Message",
     "ToolCall",
     "ToolCallResponse",
+    "Usage",
 ]
 
 
@@ -70,6 +73,26 @@ class ChatResponse:
     input_tokens: int
     output_tokens: int
     stop_reason: str | None = None
+
+
+@dataclass(frozen=True)
+class Usage:
+    """Token usage reported for an LLM call."""
+
+    input_tokens: int
+    output_tokens: int
+
+
+@dataclass(frozen=True)
+class ExtractResponse:
+    """Result of a :meth:`LLMClient.extract` call.
+
+    ``data`` is the structured object parsed from provider-side tool-use.
+    ``usage`` is ``None`` when the adapter cannot determine token counts.
+    """
+
+    data: dict[str, Any]
+    usage: Usage | None
 
 
 @dataclass(frozen=True)
@@ -124,11 +147,11 @@ class LLMClient(Protocol):
         messages: list[Message],
         *,
         schema: dict[str, Any],
-    ) -> dict[str, Any]:
+    ) -> ExtractResponse:
         """Run structured extraction. ``schema`` is a JSON schema describing
         the expected output object; the adapter is responsible for routing
         this through provider-side tool-use and parsing the result back into
-        a plain ``dict``.
+        an :class:`ExtractResponse`.
         """
         ...
 

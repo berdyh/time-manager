@@ -60,6 +60,7 @@ from tm.engines.variant_cluster import (
     BAD_DAY_THRESHOLD,
     GOOD_DAY_THRESHOLD,
 )
+from tm.llm.client import ExtractResponse, Usage
 from tm.llm.cost_meter import CostMeter
 from tm.models.outcome import OutcomeAggregator
 from tm.repositories.events import EventsRepository
@@ -195,8 +196,8 @@ def run_eval(
 
     For each fixture: build a tmp SQLite DB, seed vocab + the goal placeholder,
     construct a :class:`DebriefAgent` with a Mock :class:`LLMClient` whose
-    ``extract.return_value`` is the fixture's ``expected.extract`` dict (with
-    the goal placeholder swapped for the real ULID), invoke
+    ``extract.return_value`` wraps the fixture's ``expected.extract`` dict
+    (with the goal placeholder swapped for the real ULID), invoke
     ``extract_and_persist``, then read the persisted events back and compare.
 
     Each fixture gets its own ``tempfile.TemporaryDirectory`` so the runs
@@ -250,7 +251,10 @@ def run_eval(
             agent_input_transcript = transcript.strip() or "n/a"
 
             # Configure mock LLM with the resolved expected extract dict.
-            agent._llm.extract.return_value = resolved_extract  # type: ignore[attr-defined]
+            agent._llm.extract.return_value = ExtractResponse(  # type: ignore[attr-defined]
+                data=resolved_extract,
+                usage=Usage(input_tokens=1, output_tokens=1),
+            )
 
             try:
                 agent.extract_and_persist(

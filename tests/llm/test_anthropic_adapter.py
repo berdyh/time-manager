@@ -19,7 +19,14 @@ from tm.llm.anthropic_adapter import (
     EXTRACT_TOOL_NAME,
     AnthropicAdapter,
 )
-from tm.llm.client import ChatResponse, Message, ToolCall, ToolCallResponse
+from tm.llm.client import (
+    ChatResponse,
+    ExtractResponse,
+    Message,
+    ToolCall,
+    ToolCallResponse,
+    Usage,
+)
 from tm.llm.errors import LLMClientError
 
 
@@ -165,7 +172,8 @@ def test_extract_forces_synthetic_tool_and_returns_input() -> None:
         "required": ["name", "score"],
     }
     out = adapter.extract([Message(role="user", content="who?")], schema=schema)
-    assert out == payload
+    assert isinstance(out, ExtractResponse)
+    assert out.data == payload
 
     kwargs = fake.messages.create.call_args.kwargs
     assert kwargs["tool_choice"] == {"type": "tool", "name": EXTRACT_TOOL_NAME}
@@ -173,6 +181,45 @@ def test_extract_forces_synthetic_tool_and_returns_input() -> None:
     assert isinstance(tools, list) and len(tools) == 1
     assert tools[0]["name"] == EXTRACT_TOOL_NAME
     assert tools[0]["input_schema"] == schema
+
+
+def test_extract_populates_usage_from_sdk_response() -> None:
+    payload = {"name": "Sasha"}
+    fake = MagicMock()
+    fake.messages.create.return_value = _sdk_message(
+        content=[_tool_use_block(id="t1", name=EXTRACT_TOOL_NAME, input=payload)],
+        input_tokens=43,
+        output_tokens=11,
+    )
+    adapter = AnthropicAdapter(client=fake)
+
+    out = adapter.extract(
+        [Message(role="user", content="who?")],
+        schema={"type": "object"},
+    )
+
+    assert out.data == payload
+    assert out.usage == Usage(input_tokens=43, output_tokens=11)
+
+
+def test_extract_usage_is_none_when_sdk_response_omits_usage() -> None:
+    payload = {"name": "Sasha"}
+    fake = MagicMock()
+    fake.messages.create.return_value = SimpleNamespace(
+        content=[_tool_use_block(id="t1", name=EXTRACT_TOOL_NAME, input=payload)],
+        model=DEFAULT_MODEL,
+        stop_reason="tool_use",
+        usage=None,
+    )
+    adapter = AnthropicAdapter(client=fake)
+
+    out = adapter.extract(
+        [Message(role="user", content="who?")],
+        schema={"type": "object"},
+    )
+
+    assert out.data == payload
+    assert out.usage is None
 
 
 def test_extract_raises_when_no_tool_use_block() -> None:

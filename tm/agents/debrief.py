@@ -36,9 +36,8 @@ Pipeline order::
        Otherwise emit one summary event with planned_tasks_completed /
        planned_tasks_total in attributes.
     7. Record actual cost via CostMeter.record using token counts pulled
-       from the LLM response (best-effort — adapters that don't expose
-       token usage cause a 0/0 record, which is consistent with the
-       existing T-FND-04 cost-meter test suite behaviour).
+       from the LLM response, falling back to the pre-call estimate when
+       the adapter cannot expose usage.
 
 The agent operates in-process. Daemon-routed mode (where the daemon owns
 Kuzu / cost writes) is out of scope for v1; T-INT-02 / T-INT-03 will wire
@@ -56,7 +55,7 @@ from tm.agents.debrief_errors import (
     DebriefTimestampError,
     DebriefValidationError,
 )
-from tm.llm.client import Message
+from tm.llm.client import ExtractResponse, Message
 from tm.llm.cost_meter import estimate_cost_usd
 from tm.models.goals import ulid
 
@@ -388,7 +387,7 @@ class DebriefAgent:
         user_content = (
             f"{self._system_prompt}\n\n<user_message>\n{sanitized}\n</user_message>"
         )
-        response = self._llm.extract(
+        result = self._llm.extract(
             messages=[Message(role="user", content=user_content)],
             schema=EXTRACT_SCHEMA,
         )
@@ -396,9 +395,10 @@ class DebriefAgent:
         # ------------------------------------------------------------
         # Post-call: validate shape + extract token usage for ledger.
         # ------------------------------------------------------------
-        validated = _validate_extract_response(response)
+        data = _extract_response_data(result)
+        validated = _validate_extract_response(data)
         used_in, used_out = _read_response_usage(
-            response, fallback_in=est_input_tokens, fallback_out=0
+            result, fallback_in=est_input_tokens, fallback_out=est_output_tokens
         )
         cost_actual = self._cost.record(
             model=self._model,
@@ -626,7 +626,7 @@ def _validate_case_date(case_date: str) -> None:
 
 
 def _validate_extract_response(response: Any) -> dict[str, Any]:
-    """Defensive validator over the dict returned by LLMClient.extract.
+    """Defensive validator over the dict returned in ExtractResponse.data.
 
     LLMClient.extract does NOT validate against the supplied JSON schema
     (T-FND-04 carry-forward intel) — the adapter just parses provider-
@@ -706,24 +706,15 @@ def _normalize_iso_timestamp(timestamp: str) -> str:
 
 
 def _read_response_usage(
-    response: Any,
+    response: ExtractResponse | Any,
     *,
     fallback_in: int,
     fallback_out: int,
 ) -> tuple[int, int]:
-    """Best-effort token-usage extraction from a Mock or real LLM response.
-
-    LLMClient.extract returns a plain dict (provider-parsed tool input),
-    which by design carries no token usage. Adapters could choose to
-    attach usage as a side-channel in the future; until then we record
-    fallback estimates so the cost ledger stays populated.
-
-    Tests can override this by attaching ``input_tokens`` /
-    ``output_tokens`` as attributes on the returned object (Mock dicts
-    happily accept attribute assignment).
-    """
-    in_t = getattr(response, "input_tokens", None)
-    out_t = getattr(response, "output_tokens", None)
+    """Read extract token usage, falling back when the adapter has none."""
+    usage = response.usage if isinstance(response, ExtractResponse) else None
+    in_t = usage.input_tokens if usage is not None else None
+    out_t = usage.output_tokens if usage is not None else None
     try:
         in_used = int(in_t) if in_t is not None else int(fallback_in)
     except (TypeError, ValueError):
@@ -737,6 +728,12 @@ def _read_response_usage(
     if out_used < 0:
         out_used = 0
     return in_used, out_used
+
+
+def _extract_response_data(response: ExtractResponse | Any) -> Any:
+    if isinstance(response, ExtractResponse):
+        return response.data
+    return response
 
 
 def _summary_exists_for_case_date(

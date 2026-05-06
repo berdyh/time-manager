@@ -24,9 +24,8 @@ Pipeline order::
        literal closing tag in the data.
     5. Validate the response shape (raise SchedulerValidationError on
        malformed output — extract does NOT enforce the schema).
-    6. Cost-meter ledger insert (output_tokens=0 per T-INT-01 carry-
-       forward; the meter will under-report until adapters expose
-       structured tool-use usage).
+    6. Cost-meter ledger insert using adapter-reported token usage when
+       available, or the pre-call estimate when usage is unavailable.
     7. Run all three guardrails. No short-circuit: every reason a
        candidate was rejected is captured in the rationale.
     8. On accept: log_suggestion via telemetry repo, return a
@@ -59,7 +58,7 @@ from tm.engines.prescriptive_monitoring import (
     Guardrails,
     GuardrailsEvaluation,
 )
-from tm.llm.client import Message
+from tm.llm.client import ExtractResponse, Message
 from tm.llm.cost_meter import estimate_cost_usd
 from tm.models.goals import ulid
 
@@ -415,7 +414,7 @@ class SchedulerAgent:
         user_content = (
             f"{self._system_prompt}\n\n<user_message>\n{sanitized}\n</user_message>"
         )
-        response = self._llm.extract(
+        result = self._llm.extract(
             messages=[Message(role="user", content=user_content)],
             schema=CANDIDATE_SCHEMA,
         )
@@ -423,13 +422,14 @@ class SchedulerAgent:
         # ------------------------------------------------------------
         # 5. Validate shape.
         # ------------------------------------------------------------
-        candidate = _validate_candidate_response(response)
+        data = _extract_response_data(result)
+        candidate = _validate_candidate_response(data)
 
         # ------------------------------------------------------------
-        # 6. Record cost (output_tokens=0 per T-INT-01 carry-forward).
+        # 6. Record cost.
         # ------------------------------------------------------------
         used_in, used_out = _read_response_usage(
-            response, fallback_in=est_input_tokens, fallback_out=0
+            result, fallback_in=est_input_tokens, fallback_out=self._max_tokens
         )
         self._cost.record(
             model=self._model,
@@ -665,7 +665,7 @@ def _sanitize_user_message_wrapper(text: str) -> str:
 
 
 def _validate_candidate_response(response: Any) -> CandidateSuggestion:
-    """Defensive validator over the dict returned by :meth:`LLMClient.extract`.
+    """Defensive validator over the dict returned in ExtractResponse.data.
 
     Raises :class:`SchedulerValidationError` on missing keys, wrong types, or
     out-of-range numerics. Successful validation returns a frozen
@@ -747,20 +747,15 @@ def _validate_outcome_number(value: Any, *, field: str) -> float:
 
 
 def _read_response_usage(
-    response: Any,
+    response: ExtractResponse | Any,
     *,
     fallback_in: int,
     fallback_out: int,
 ) -> tuple[int, int]:
-    """Best-effort token-usage extraction from a Mock or real LLM response.
-
-    LLMClient.extract returns a plain dict; tests can attach
-    ``input_tokens`` / ``output_tokens`` as attributes on the returned
-    object (Mock dicts happily accept attribute assignment) to drive the
-    cost-meter ledger.
-    """
-    in_t = getattr(response, "input_tokens", None)
-    out_t = getattr(response, "output_tokens", None)
+    """Read extract token usage, falling back when the adapter has none."""
+    usage = response.usage if isinstance(response, ExtractResponse) else None
+    in_t = usage.input_tokens if usage is not None else None
+    out_t = usage.output_tokens if usage is not None else None
     try:
         in_used = int(in_t) if in_t is not None else int(fallback_in)
     except (TypeError, ValueError):
@@ -774,3 +769,9 @@ def _read_response_usage(
     if out_used < 0:
         out_used = 0
     return in_used, out_used
+
+
+def _extract_response_data(response: ExtractResponse | Any) -> Any:
+    if isinstance(response, ExtractResponse):
+        return response.data
+    return response

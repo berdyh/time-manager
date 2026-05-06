@@ -16,10 +16,12 @@ from unittest.mock import MagicMock
 from tm.llm.anthropic_adapter import AnthropicAdapter
 from tm.llm.client import (
     ChatResponse,
+    ExtractResponse,
     LLMClient,
     Message,
     ToolCall,
     ToolCallResponse,
+    Usage,
 )
 
 
@@ -39,12 +41,16 @@ def test_dataclass_shapes_are_immutable() -> None:
     """Frozen dataclasses prevent accidental mutation of transport types."""
     msg = Message(role="user", content="hi")
     chat = ChatResponse(text="hello", model="m", input_tokens=1, output_tokens=2)
+    usage = Usage(input_tokens=3, output_tokens=4)
+    extract = ExtractResponse(data={"ok": True}, usage=usage)
     tc = ToolCall(id="x", name="t", input={"a": 1})
     tcr = ToolCallResponse(text="", tool_calls=[tc], model="m")
 
     for obj, attr in (
         (msg, "role"),
         (chat, "text"),
+        (usage, "input_tokens"),
+        (extract, "data"),
         (tc, "id"),
         (tcr, "text"),
     ):

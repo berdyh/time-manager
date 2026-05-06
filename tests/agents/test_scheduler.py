@@ -36,6 +36,7 @@ from tm.engines.prescriptive_monitoring import (
 )
 from tm.engines.process_mining import ProcessMiner
 from tm.engines.variant_cluster import VariantClusterer
+from tm.llm.client import ExtractResponse, Usage
 from tm.llm.cost_meter import CostMeter
 from tm.llm.errors import CostCapExceeded
 from tm.models.goals import ulid
@@ -149,6 +150,17 @@ def _canned_extract(
     return data
 
 
+_EXTRACT_USAGE = Usage(input_tokens=98, output_tokens=32)
+
+
+def _extract_response(
+    data: Any,
+    *,
+    usage: Usage | None = _EXTRACT_USAGE,
+) -> ExtractResponse:
+    return ExtractResponse(data=data, usage=usage)  # type: ignore[arg-type]
+
+
 def _make_agent(
     *,
     process_miner: ProcessMiner,
@@ -167,7 +179,7 @@ def _make_agent(
     if extract_side_effect is not None:
         llm.extract.side_effect = extract_side_effect
     elif extract_return is not None:
-        llm.extract.return_value = extract_return
+        llm.extract.return_value = _extract_response(extract_return)
 
     agent = SchedulerAgent(
         llm_client=llm,
@@ -332,6 +344,39 @@ def test_propose_suggestion_logs_to_telemetry_with_correct_fields(
     # conformance_deviation = 1 - fitness
     assert rec.conformance_deviation == pytest.approx(1.0 - 0.65)
     assert rec.llm_explanation_text == "exercise correlates with good_day cluster"
+
+
+def test_cost_record_uses_extract_response_usage(
+    process_miner: ProcessMiner,
+    variant_clusterer: VariantClusterer,
+    outcome_aggregator: OutcomeAggregator,
+    telemetry_repo: SuggestionTelemetryRepository,
+    events_repo: EventsRepository,
+    goals_repo: GoalsRepository,
+    cost_meter: CostMeter,
+) -> None:
+    case_date = "2026-05-06"
+    _seed_partial_trace(events_repo, case_date=case_date)
+    cost_meter.record = Mock(wraps=cost_meter.record)  # type: ignore[method-assign]
+
+    agent, _ = _make_agent(
+        process_miner=process_miner,
+        variant_clusterer=variant_clusterer,
+        outcome_aggregator=outcome_aggregator,
+        telemetry_repo=telemetry_repo,
+        events_repo=events_repo,
+        goals_repo=goals_repo,
+        cost_meter=cost_meter,
+        extract_return=_canned_extract(),
+    )
+
+    agent.propose_suggestion(case_date=case_date)
+
+    cost_meter.record.assert_called_once()
+    kwargs = cost_meter.record.call_args.kwargs
+    assert kwargs["input_tokens"] == _EXTRACT_USAGE.input_tokens
+    assert kwargs["output_tokens"] == _EXTRACT_USAGE.output_tokens
+    assert kwargs["output_tokens"] > 0
 
 
 def test_propose_suggestion_explanation_persisted_in_telemetry_llm_explanation_text(

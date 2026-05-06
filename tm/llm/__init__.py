@@ -5,10 +5,12 @@ from __future__ import annotations
 from tm.llm.anthropic_adapter import AnthropicAdapter
 from tm.llm.client import (
     ChatResponse,
+    ExtractResponse,
     LLMClient,
     Message,
     ToolCall,
     ToolCallResponse,
+    Usage,
 )
 from tm.llm.cost_meter import CostMeter
 from tm.llm.errors import CostCapExceeded, LLMClientError
@@ -18,9 +20,11 @@ __all__ = [
     "ChatResponse",
     "CostCapExceeded",
     "CostMeter",
+    "ExtractResponse",
     "LLMClient",
     "LLMClientError",
     "Message",
     "ToolCall",
     "ToolCallResponse",
+    "Usage",
 ]
