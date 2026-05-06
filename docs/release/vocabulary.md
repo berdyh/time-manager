@@ -28,8 +28,9 @@ Shipped the vocabulary governance subsystem: a 16-activity canonical starter set
 ## Public surface added
 
 ### CLI commands
-- `tm vocab review [--db-path PATH] [--limit N] [--since DATE]` — interactive: surfaces top-N novel labels from recent events; per label `[m]erge / [c]reate / [i]gnore / [s]kip rest`. Skips LLM in v1 (the `--no-llm` flag is reserved scaffolding for a future LLM-assisted variant).
-- `tm vocab list [--include-archived]` — prints vocabulary entries.
+- `tm vocab review [--db-path PATH] [--limit N] [--since DATE]` — interactive: surfaces top-N novel labels from recent events; per label `[m]erge / [c]reate / [i]gnore / [s]kip rest`. Skips LLM in v1 (the `--no-llm` flag is reserved scaffolding for a future LLM-assisted variant). Polish landed in commit `d51fbf6`: m-branch abort path, c-branch failure counter, auto-seed on `tm vocab list`, weak test disjunct tightened.
+- `tm vocab list [--include-archived]` — prints vocabulary entries; auto-seeds STARTER_VOCABULARY/STARTER_ALIASES on empty DB (commit `d51fbf6`).
+- `tm vocab drift [--db-path PATH] [--idle-days N] [--since DATE] [--until DATE]` — operator surface for `VocabAligner.find_drifted_activities` + `compute_novelty_rate` (commit `2558fae`). Lists drifted canonicals (no events in idle window) with last-seen dates + novelty rate over the events window. Works without `TM_LLM_API_KEY` (pure DB query).
 
 ### APIs (importable)
 - `tm.repositories.vocabulary.VocabularyEntry` (dataclass)
@@ -75,12 +76,13 @@ Shipped the vocabulary governance subsystem: a 16-activity canonical starter set
 
 | Risk | Severity | Resolution path |
 |---|---|---|
-| **Case-asymmetry: CLI merge/create passes raw label to `add_alias()` without normalizing**. Mixed-case event labels (e.g. `'Jogging'`) become unreachable aliases because `resolve()` lowercases lookups. Confirmed reachable via `tm vocab review` flow. | medium (latent until extractor emits mixed-case) | **T-VOC-01c** (must land before T-INT-01) — lowercase + strip inside `add_alias` + regression test |
-| **Vocabulary timestamp format diverges from project ISO-T-Z** — `vocabulary.added_at` and `aliases.created_at` use SQLite `datetime('now')` (space separator, no Z); `goals.created_at` and `events.timestamp` use ISO-T-Z. | low (timestamps not currently compared lexicographically against goals/events) | **T-VOC-01d** — pass explicit `_now_iso()` from Python in INSERT statements |
+| ~~**Case-asymmetry**~~ | ~~medium~~ | **RESOLVED** in T-VOC-01-polish bundle (commit `12c463f`) — `add_alias` lowercases + strips inputs; regression test added. |
+| ~~**Vocabulary timestamp format diverges from project ISO-T-Z**~~ | ~~low~~ | **RESOLVED** in T-VOC-01-polish bundle. |
 | `breakfast/lunch/dinner→meal` collapses meal-of-day context | informational | Product call: remove rows if meal-of-day analysis becomes a goal |
-| `_db_path` private-attr access in `VocabAligner` (`# noqa: SLF001`) | informational | **T-VOC-01b** — expose `db_path` as `@property` |
-| `tm vocab list` on empty DB shows "no vocabulary entries" rather than auto-seeding | UX gap | Document or auto-seed in a follow-up |
-| `tm vocab review` `m`-branch has no abort path; `c`-branch failure silently drops the label without incrementing skipped counter | UX polish | Surfaced in T-VOC-03 review; folded into a future T-VOC-03b polish task |
+| ~~`_db_path` private-attr access in `VocabAligner`~~ | ~~informational~~ | **RESOLVED** — `VocabularyRepository.db_path` exposed as `@property` (`tm/repositories/vocabulary.py:135`); no `noqa` remaining. |
+| ~~`tm vocab list` on empty DB shows "no vocabulary entries" rather than auto-seeding~~ | ~~UX gap~~ | **RESOLVED** in commit `d51fbf6` — auto-seeds STARTER_VOCABULARY/STARTER_ALIASES idempotently on empty DB. |
+| ~~`tm vocab review` `m`-branch has no abort path; `c`-branch failure silently drops the label~~ | ~~UX polish~~ | **RESOLVED** in commit `d51fbf6` (T-VOC-03b) — m-branch abort path added, c-branch failure counter increments skipped, weak test disjunct tightened. |
+| `VocabAligner.__init__` `llm` param now `LLMClient | None` | informational | Relaxed in commit `2558fae` to allow LLM-free construction for the `tm vocab drift` CLI; existing align/extract paths still raise `AlignmentError` if `llm is None`. |
 
 ---
 
@@ -92,8 +94,11 @@ First time landing — **no breaking changes**. Existing development databases p
 
 ## Next-step pointers
 
-- **T-VOC-01c** (must land before T-INT-01): lowercase+strip `add_alias` inputs and add regression test; closes the case-asymmetry hazard for real-world ingest.
-- **T-VOC-01b**: expose `VocabularyRepository.db_path` as `@property`; remove the `noqa: SLF001` in `tm/vocab_alignment.py`.
-- **T-VOC-01d**: align vocabulary timestamp defaults with project ISO-T-Z (mirror `2e73f15` fix for goals).
-- **T-INT-01** (debrief agent): wire `VocabAligner.align` into the debrief flow to convert free-text user input into canonical activities. Depends on the case-asymmetry fix landing first.
-- **T-VOC-03b** (optional polish): six items from the T-VOC-03 review (auto-seed on `tm vocab list`, m-branch abort path, weak test disjunct, etc.).
+All T-VOC follow-ups closed:
+
+- ~~**T-VOC-01c**~~ — DONE (commit `12c463f`): `add_alias` lowercases + strips inputs; regression test added.
+- ~~**T-VOC-01b**~~ — DONE: `VocabularyRepository.db_path` is `@property` (`tm/repositories/vocabulary.py:135`).
+- ~~**T-VOC-01d**~~ — DONE in T-VOC-01-polish bundle.
+- ~~**T-INT-01** debrief agent~~ — DONE earlier in v1; `tm/agents/debrief.py` wires `VocabAligner.align` into the debrief flow.
+- ~~**T-VOC-03b** polish~~ — DONE (commit `d51fbf6`).
+- **T-VOC-05** `tm vocab drift` CLI — DONE (commit `2558fae`) — operator surface over `VocabAligner.find_drifted_activities` + `compute_novelty_rate`.

@@ -57,6 +57,9 @@ Any task may transition to `halted` on kill-switch or plan-drift; resume only on
 | T-DOC-02 | /document-release: Vocabulary | orchestrator | — | T-VOC-04 ✓ | inline | **done** | orchestrator | Released as 0348379 → docs/release/vocabulary.md |
 | T-FND-07 | Migration runner extension for pre-txn pragmas | opus | M | T-FND-02 ✓ | 200K | pending | — | Unblocks formal FK rebuild + goals.name CHECK + future schema changes; surfaced by T-GOAL-03, T-GOAL-04, T-PM-01 reviews |
 | Wave T-A (Tier-A polish bundle) | T-INT-02b + T-PM-02-followup-a + T-VOC-03b + T-INT-04-events-until-doc | codex (xhigh, single bundled session) | L | various ✓ | 155K | **all done** | codex worker (~155K) + orchestrator inline verify | Single session, 4 sub-tasks, file-isolated; 4 commits 09cca89/543d223/d51fbf6/147b138; 543/543 passed (+5 new); mypy + ruff clean; SLF001 noqa eliminated; PetriNetData now first-class on DiscoveredModel via new tm/engines/petri_net.py |
+| Wave T-B (Tier-B / discrepancies bundle) | T-INT-05 + T-VOC-05 + T-INT-06 (parallel) + T-OPS-01+02 (sequential bundle) | codex (xhigh, 4 sessions) | M | T-A ✓ | 245K | **all done** | codex workers (~245K) + claude code-reviewer (~65K) | 4 commits d234e26/2558fae/f41a830/c1674fd + 2 review-fix commits 756968f/4d756aa; cross-review caught sha256 model_id rewrite (T-INT-05) + unrequested 30→14 default (T-VOC-05); both fixed before promotion. 565+10=565 → 575 then verified at 565+2 skipped post-fix. tm debrief + tm suggest CLIs CLOSED operator-surface gap. |
+| Wave T-P (Tier-P review-driven cleanup) | T-OPS-cleanup (`--cost-cap-usd` rename + helper extraction) | claude opus subagent | L | T-B ✓ | 60K | **done** | opus subagent (46K) + orchestrator inline verify | Commit 8a063fc; new tm/commands/_shared.py module; 565+2 skipped, mypy + ruff clean. T-VOC-01b verified already done — skipped. |
+| Wave T-M (Tier-M real follow-ups) | T-PM-02-v2 + T-DAEMON-CLI-WIRING (parallel) | claude opus subagents | M | T-B ✓ | 130K | **all done** | opus subagents (~135K total) + claude code-reviewer (~65K) | 2 commits 2659e64 + f2b39b1; 17 new tests (582+2 skipped); mypy + ruff clean. Cross-review verdicts: T-PM-02-v2 promote to done, T-DAEMON-CLI-WIRING promote with findings (lock-during-LLM is honest v1 limitation). T-FND-07b skipped — reported `noqa: PLR0912` did not exist. |
 
 ## File-lock ledger
 
@@ -75,18 +78,22 @@ Updated by orchestrator on each dispatch. Lock = task ID currently allowed to ed
 
 ## Kill-switch state
 
-- Daily cumulative tokens: ~3.05M actual of 4M cap (~76%)
-- **All four v1 deliverables SHIPPED with release docs + 3 critical caveats CLOSED + Tier-A polish bundle COMPLETE:**
+- Daily cumulative tokens: ~3.4M actual of 4M cap (~85%)
+- **All four v1 deliverables SHIPPED with release docs + 3 critical caveats CLOSED + Tier A/B/M/P bundles COMPLETE:**
   - Vocabulary governance: `0348379`
   - Goals: `ca31a2b`
-  - Process mining: `d8062ff` (SLF001 carry-forward NOW RESOLVED via Wave T-A)
+  - Process mining: `d8062ff` (SLF001 + conformance-rehydrate carry-forwards NOW RESOLVED via Wave T-A + T-M)
   - Outcome scoring: `e188119`
-  - v1 integrated: `ef3fa59` (signoff = granted, no longer with caveats)
+  - v1 integrated: `ef3fa59` (signoff = granted)
   - Critical caveats: `0541fc3` (tm init), `385030d` (README), `5869b8c` (LLM extract usage)
   - Tier-A polish: `09cca89` `543d223` `d51fbf6` `147b138`
+  - Tier-B / discrepancies: `d234e26` `2558fae` `f41a830` `c1674fd` (+ review fixes `756968f` `4d756aa`)
+  - Tier-P review-driven cleanup: `8a063fc`
+  - Tier-M real follow-ups: `2659e64` `f2b39b1`
 - Halts active: none
 - Retry counters: all 0
-- Full suite: **543 passed + 1 skipped**, mypy clean (44 files), ruff clean (94 files)
+- Full suite: **582 passed + 2 skipped**, mypy clean (47 files), ruff clean (100 files)
+- **End-to-end CLI path now reachable:** `tm init → tm goal add → tm debrief transcript.txt → tm discover → tm suggest`. Operator-surface gap CLOSED.
 
 ## Dispatch log
 

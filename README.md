@@ -11,10 +11,11 @@ action per day.
 
 ![status: pre-alpha](https://img.shields.io/badge/status-pre--alpha-orange)
 
-Pre-alpha. v1 shipped with caveats on 2026-05-06, and the main pipeline exists,
-but expect rough edges before using it as a daily tool. The first-user path is
-usable for setup, goals, vocabulary, and mining over an events log. Debrief and
-scheduler integration are still primarily programmatic.
+Pre-alpha. v1 shipped on 2026-05-06; original caveats are closed and the
+operator-surface gap (no `tm debrief` / `tm suggest`) was closed in the same
+window. The end-to-end CLI path is now reachable: `tm init → goal add →
+debrief transcript.txt → discover → suggest`. Expect rough edges before using
+it as a daily tool, but the first-user pipeline is no longer programmatic-only.
 
 ## Install
 
@@ -82,22 +83,27 @@ created goal 01HX...
 Goals are first-class records. Events can later point at a goal when they
 advance it.
 
-4. Note the current debrief entry point.
+4. Run a debrief.
 
-There is no `tm debrief` command in v1. For now, debrief ingestion is available
-through the programmatic `DebriefAgent.extract_and_persist(...)` path in
-`tm/agents/debrief.py`. A user-facing debrief CLI is a v1.x follow-up.
+```bash
+tm debrief --transcript-file today.txt --case-date 2026-05-06
+```
 
-The intended pipeline is:
+`tm debrief` reads a transcript from `--transcript-file PATH` or `--from-stdin`,
+calls `DebriefAgent.extract_and_persist`, and persists structured events. It
+prints `events_persisted`, novel labels, summary counts, and estimated +
+actual cost. `TM_LLM_API_KEY` must be set.
+
+The full pipeline is:
 
 ```text
 transcript
-  -> DebriefAgent
+  -> tm debrief         (DebriefAgent)
   -> events
-  -> ProcessMiner
-  -> VariantClusterer
+  -> tm discover        (ProcessMiner: Inductive Miner)
+  -> tm variants        (VariantClusterer)
   -> outcome score {0, 1, 2}
-  -> SchedulerAgent
+  -> tm suggest         (SchedulerAgent)
   -> telemetry
 ```
 
@@ -153,14 +159,19 @@ start reading from the events log.
 - `tm init`, bootstrap a workspace by applying migrations and seeding starter
   vocabulary.
 - `tm goal add/list/complete/abandon/show`, manage first-class goal pursuit.
-- `tm vocab review/list`, govern activity vocabulary, review novel labels, and
-  list canonical activities.
+- `tm vocab review/list/drift`, govern activity vocabulary. `drift` surfaces
+  drifted canonicals (no events for N days) and a novelty rate over a window.
 - `tm daemon start/stop/status`, run the Unix-socket single-writer daemon. It
   is optional in v1 single-user CLI use, and required once multiple writers are
-  active.
+  active. The daemon also exposes `run_debrief`, `propose_suggestion`, and
+  `rebuild_kuzu_projection` as RPC handlers for cron-driven automation.
 - `tm discover`, run Inductive Miner discovery on the events log.
 - `tm bottlenecks`, analyze per-activity duration and top direct-follow edges.
 - `tm variants`, list distinct activity sequences ordered by frequency.
+- `tm debrief --transcript-file PATH | --from-stdin`, run the LLM-backed
+  debrief extractor against a transcript and persist events.
+- `tm suggest [--case-goal-id ULID]`, run the scheduler agent for a case date
+  and render the suggestion (or skip reason).
 
 ## Environment Variables
 
@@ -199,16 +210,22 @@ it uses `~/.local/share/tm`.
 
 ## Known Limitations And v1.x Backlog
 
-See the v1 release note's
-[Critical Caveats](docs/release/v1.md#critical-caveats--must-close-before-first-user)
-for the canonical backlog.
+See [docs/release/v1.md](docs/release/v1.md) for the canonical backlog.
 
-- Cost ledger under-reports output tokens for `LLMClient.extract` responses
-  until `T-INT-04-llm-extract-usage` lands.
-- Daemon Kuzu nightly batch wiring is not connected yet. The projection code
-  exists, but operator-level scheduling is still backlog.
-- LLM-driven debrief ingestion has no CLI command yet. Use the programmatic
-  `DebriefAgent.extract_and_persist(...)` path until the v1.x CLI lands.
+- ~~Cost ledger under-reports output tokens for `LLMClient.extract`.~~ Closed
+  (commit `5869b8c`).
+- ~~Daemon Kuzu nightly batch wiring is not connected.~~ Closed — `tm daemon`
+  exposes `rebuild_kuzu_projection` as an RPC handler (commit `d234e26`)
+  invokable from cron/systemd timer.
+- ~~LLM-driven debrief ingestion has no CLI command yet.~~ Closed — `tm
+  debrief` ships in commit `c1674fd`; daemon RPC handlers `run_debrief` and
+  `propose_suggestion` ship in commit `f2b39b1`.
+- **Concurrency carry-forward:** the daemon's `run_debrief` and
+  `propose_suggestion` handlers hold the single-writer lock for the duration
+  of the LLM call (seconds). Acceptable for single-operator v1 traffic;
+  future fix releases the lock around the LLM round-trip.
+- **Multiday variant clustering** is open. The scheduler windows 14 days, but
+  `VariantClusterer` only labels single cases.
 
 ## License / Contributing
 

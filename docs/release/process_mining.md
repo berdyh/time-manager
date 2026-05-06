@@ -10,7 +10,7 @@
 
 ## Summary
 
-Process-mining engine integration covering the four canonical operations on XES-shaped event logs sourced from the existing `EventsRepository`: Inductive Miner discovery, token-based-replay conformance checking, variant frequency analysis, and per-activity sojourn + DFG performance analysis. Two case lenses are supported (`workday` keyed on `case_date`; `goal_pursuit` keyed on `case_goal_id`) backed by additive XES columns on the events table (migration 0006). Discovered Petri nets project deterministically into a Kuzu graph with full structural round-trip (places, transitions, arcs, initial/final markings, activity vocabulary). Three operator-facing Typer sub-commands (`tm discover`, `tm bottlenecks`, `tm variants`) expose the engine on read-only paths with friendly empty-log handling and no PM4Py type leakage. Conformance v1 re-mines from the originating window when no Kuzu rehydration source is configured; the `rehydration_fallback_used` flag in `extractor_metadata` signals when this fallback is in effect.
+Process-mining engine integration covering the four canonical operations on XES-shaped event logs sourced from the existing `EventsRepository`: Inductive Miner discovery, token-based-replay conformance checking, variant frequency analysis, and per-activity sojourn + DFG performance analysis. Two case lenses are supported (`workday` keyed on `case_date`; `goal_pursuit` keyed on `case_goal_id`) backed by additive XES columns on the events table (migration 0006). Discovered Petri nets project deterministically into a Kuzu graph with full structural round-trip (places, transitions, arcs, initial/final markings, activity vocabulary). Three operator-facing Typer sub-commands (`tm discover`, `tm bottlenecks`, `tm variants`) expose the engine on read-only paths with friendly empty-log handling and no PM4Py type leakage. **Conformance prefers `model.petri_net` and skips re-mining when present** (T-PM-02-v2, commit `2659e64`); falls back to re-mining the originating window only when `petri_net is None`. The `extractor_metadata["rehydration_source"]` field reports which path was taken (`"petri_net_data"` / `"originating_window_remine"` / `"replay_log_fallback"`).
 
 ---
 
@@ -35,9 +35,10 @@ Process-mining engine integration covering the four canonical operations on XES-
 
 ### APIs (importable)
 - `tm.engines.process_mining.ProcessMiner` — `discover_inductive_miner`, `conformance_token_replay`, `analyze_variants`, `analyze_performance`
-- Frozen result dataclasses: `DiscoveredModel`, `ConformanceResult`, `Variant`, `VariantAnalysis`, `PerformanceMetric`, `PerformanceAnalysis`
+- Frozen result dataclasses: `DiscoveredModel` (now carries `petri_net: PetriNetData | None`), `ConformanceResult`, `Variant`, `VariantAnalysis`, `PerformanceMetric`, `PerformanceAnalysis`
+- `tm.engines.petri_net.{PlaceData, TransitionData, ArcData, MarkingData, PetriNetData, petri_net_data_from_pm4py, petri_net_data_to_pm4py}` — round-trip pm4py ↔ frozen-dataclass converters (canonical home as of commit `09cca89`; reverse converter added in `2659e64`)
 - `tm.stores.kuzu_store.KuzuStore` — `persist_model`, `get_model`, `list_models`, `get_petri_net`, `delete_model`
-- Frozen Kuzu dataclasses: `PlaceData`, `TransitionData`, `ArcData`, `MarkingData`, `PetriNetData`, `PersistedModel`
+- `tm.stores.kuzu_store.PersistedModel` (frozen dataclass)
 - `tm.stores.kuzu_projection.project_discovered_model_to_kuzu`, `rebuild_kuzu_projection`, `compute_model_id`
 
 ### Schema migrations
@@ -80,8 +81,8 @@ Process-mining engine integration covering the four canonical operations on XES-
 
 | Risk | Severity | Resolution path |
 |---|---|---|
-| **Conformance does not yet rehydrate from Kuzu** — re-mines from the originating window, with `rehydration_fallback_used` flag when even that fails | non-blocking | T-PM-02 v2 follow-up |
-| **Kuzu projection is currently dead code at the operator level** — daemon doesn't invoke `rebuild_kuzu_projection` yet, and CLI is read-only by design. Persistence layer is "ready and waiting" | non-blocking | Wire into daemon nightly batch under T-INT-02 |
+| ~~**Conformance does not yet rehydrate from Kuzu**~~ | ~~non-blocking~~ | **RESOLVED** in commit `2659e64` — conformance prefers `model.petri_net` (populated automatically by `discover_inductive_miner`); reverse converter `petri_net_data_to_pm4py` enables operator-side rehydration via `KuzuStore.get_petri_net(model_id)`. `extractor_metadata["rehydration_source"]` reports which path was taken. |
+| ~~**Kuzu projection is currently dead code at the operator level**~~ | ~~non-blocking~~ | **RESOLVED** in commit `d234e26` — `rebuild_kuzu_projection` exposed as daemon RPC handler invokable from cron/systemd timer. |
 | ~~**`kuzu_projection` borrows `ProcessMiner._load_dataframe`** (private, with `# noqa: SLF001`)~~ | ~~non-blocking~~ | **RESOLVED** in Tier-A bundle (commit `09cca89`): `PetriNetData` now first-class on `DiscoveredModel` via new `tm/engines/petri_net.py` module; projection consumes `model.petri_net` directly, no re-mine, `# noqa: SLF001` removed. |
 | **Kuzu writer ownership is by convention only** — no cross-process locking | non-blocking | Safe for single-daemon v1 deployments; revisit if multiple writers ever land |
 | **Performance output for terminal activities reports `avg=n/a, count=0`** because sojourn time is credited to non-terminal events; visually surprising for short cases | informational | Algorithmically correct; document in operator-facing readme if confusion emerges |
@@ -99,8 +100,9 @@ Run `apply_pending_migrations()` to install **migration 0006** (XES columns: `ca
 
 ## Next-step pointers
 
-- ~~**T-PM-02 follow-up:** surface `PetriNetData` on `DiscoveredModel` directly~~ — **DONE** (Tier-A bundle, commit `09cca89`); `tm/engines/petri_net.py` is the new shared home.
-- **T-PM-02 v2 follow-up:** rehydrate conformance from `KuzuStore.get_petri_net` instead of re-mining from the originating window.
-- **T-INT-02 daemon wiring:** call `rebuild_kuzu_projection` from the daemon's nightly batch so the persistence layer becomes operationally live.
-- **T-INT-02 scheduler agent:** consume `ProcessMiner` outputs (variants + bottlenecks + conformance fitness) as scheduling signals.
+- ~~**T-PM-02 follow-up:** surface `PetriNetData` on `DiscoveredModel` directly~~ — **DONE** (Tier-A bundle, commit `09cca89`); `tm/engines/petri_net.py` is the canonical home.
+- ~~**T-PM-02 v2 follow-up:** rehydrate conformance from cached `PetriNetData` instead of re-mining~~ — **DONE** (commit `2659e64`); `petri_net_data_to_pm4py` reverse converter + `model.petri_net` fast-path; `extractor_metadata["rehydration_source"]` exposes the path taken.
+- ~~**T-INT-02 daemon wiring:** call `rebuild_kuzu_projection` from the daemon~~ — **DONE** (commit `d234e26`); RPC handler invokable from external cron/systemd timer.
+- ~~**T-INT-02 scheduler agent:** consume `ProcessMiner` outputs as scheduling signals~~ — **DONE** earlier in v1; SchedulerAgent at `tm/agents/scheduler.py` uses `analyze_variants`, `analyze_performance`, and `conformance_token_replay`.
 - **Optional:** weighted-arc regression test (current tests use default `weight=1`).
+- **Open (Tier S):** multiday variant clustering — scheduler windows 14 days but `VariantClusterer` only labels single cases.
