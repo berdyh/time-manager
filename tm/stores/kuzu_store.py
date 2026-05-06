@@ -50,6 +50,14 @@ from pathlib import Path
 
 import kuzu
 
+from tm.engines.petri_net import (
+    ArcData,
+    MarkingData,
+    PetriNetData,
+    PlaceData,
+    TransitionData,
+)
+
 __all__ = [
     "ArcData",
     "KuzuStore",
@@ -60,73 +68,6 @@ __all__ = [
     "TransitionData",
     "compute_model_id",
 ]
-
-
-# ---------------------------------------------------------------------------
-# Public dataclasses (frozen, no PM4Py types leak)
-# ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class PlaceData:
-    """A Petri net place. ``place_id`` is unique within its owning model."""
-
-    place_id: str
-    label: str
-
-
-@dataclass(frozen=True)
-class TransitionData:
-    """A Petri net transition.
-
-    ``is_invisible`` mirrors PM4Py's convention: silent transitions have a
-    ``None`` label, which we coerce to an empty ``label`` string and flag
-    here.
-    """
-
-    transition_id: str
-    label: str
-    is_invisible: bool
-
-
-@dataclass(frozen=True)
-class ArcData:
-    """A Petri net arc.
-
-    Direction is implicit in ``source_kind`` / ``target_kind``; one side is
-    always ``"place"`` and the other ``"transition"``.
-    """
-
-    source_id: str
-    source_kind: str  # "place" or "transition"
-    target_id: str
-    target_kind: str  # "place" or "transition"
-    weight: int = 1
-
-
-@dataclass(frozen=True)
-class MarkingData:
-    """An initial or final marking for a Petri net.
-
-    ``place_tokens`` maps ``place_id`` to the integer token count at that
-    place under this marking.
-    """
-
-    marking_id: str
-    kind: str  # "initial" or "final"
-    place_tokens: dict[str, int]
-
-
-@dataclass(frozen=True)
-class PetriNetData:
-    """A complete Petri net + initial/final markings + activity vocabulary."""
-
-    places: tuple[PlaceData, ...]
-    transitions: tuple[TransitionData, ...]
-    arcs: tuple[ArcData, ...]
-    initial_marking: MarkingData
-    final_marking: MarkingData
-    activities: tuple[str, ...]
 
 
 @dataclass(frozen=True)

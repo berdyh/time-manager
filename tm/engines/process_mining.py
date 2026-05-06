@@ -15,12 +15,13 @@ Two case lenses are supported:
 
 This module is intentionally a *thin* wrapper: PM4Py types never leak across
 the API surface — every operation returns one of the frozen dataclasses
-defined here so that downstream consumers (T-PM-03 Kuzu projection, T-PM-04
-CLI display) can treat results as plain Python data.
+defined here or in :mod:`tm.engines.petri_net` so that downstream consumers
+(T-PM-03 Kuzu projection, T-PM-04 CLI display) can treat results as plain
+Python data.
 
-The conformance v1 design re-runs discovery internally because the discovered
-Petri net is not yet persisted (T-PM-03 will project it to Kuzu).  Once a
-projection layer exists, conformance can rehydrate without re-mining.
+The conformance v1 design still re-runs discovery internally. Projection
+consumers use ``DiscoveredModel.petri_net`` directly, but conformance can
+rehydrate from Kuzu only once that replay path is wired.
 
 PM4Py emits a tqdm progress bar by default; we silence the relevant warnings
 locally for a clean test run but do not muck with global state.
@@ -31,13 +32,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
+import pm4py
+import pm4py.util.constants
+
+from tm.engines.petri_net import PetriNetData, petri_net_data_from_pm4py
 from tm.repositories.events import EventsRepository
 
 if TYPE_CHECKING:  # pragma: no cover - import guard for type checker only
     import pandas as pd
-
-import pm4py
-import pm4py.util.constants
 
 pm4py.util.constants.SHOW_PROGRESS_BAR = False  # silence tqdm progress bars
 
@@ -79,6 +81,7 @@ class DiscoveredModel:
     case_count: int
     activity_count: int
     extractor_metadata: dict[str, Any]
+    petri_net: PetriNetData | None = None
 
 
 @dataclass(frozen=True)
@@ -341,6 +344,7 @@ class ProcessMiner:
                 case_count=0,
                 activity_count=0,
                 extractor_metadata=metadata,
+                petri_net=None,
             )
 
         import pm4py
@@ -381,6 +385,7 @@ class ProcessMiner:
             case_count=case_count,
             activity_count=activity_count,
             extractor_metadata=metadata,
+            petri_net=petri_net_data_from_pm4py(net, im, fm),
         )
 
     # ------------------------------------------------------------------

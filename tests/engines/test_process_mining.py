@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from tm.engines.petri_net import PetriNetData
 from tm.engines.process_mining import (
     ConformanceResult,
     DiscoveredModel,
@@ -129,6 +130,10 @@ def test_discover_workday_returns_DiscoveredModel(tmp_path: Path) -> None:
     assert model.process_tree_repr  # non-empty
     assert model.petri_net_summary["transitions"] >= 3
     assert model.petri_net_summary["places"] >= 2
+    assert isinstance(model.petri_net, PetriNetData)
+    assert len(model.petri_net.places) == model.petri_net_summary["places"]
+    assert len(model.petri_net.transitions) == model.petri_net_summary["transitions"]
+    assert len(model.petri_net.arcs) == model.petri_net_summary["arcs"]
     assert model.extractor_metadata["lens"] == "workday"
 
 
@@ -158,6 +163,7 @@ def test_discover_empty_log_returns_zeroed_model(tmp_path: Path) -> None:
     assert model.precision is None
     assert model.process_tree_repr == ""
     assert model.petri_net_summary == {"places": 0, "transitions": 0, "arcs": 0}
+    assert model.petri_net is None
 
 
 def test_discover_single_activity_log(tmp_path: Path) -> None:
