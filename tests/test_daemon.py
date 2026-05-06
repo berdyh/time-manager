@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import socket
 import stat
 import threading
@@ -38,6 +39,7 @@ from tm.repositories.goals import GoalsRepository
 from tm.repositories.vocabulary import VocabularyRepository
 from tm.resilience import ResilienceError, disk_space_pre_check
 from tm.store import Store
+from tm.stores.kuzu_store import KuzuStore
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MIGRATIONS_DIR = REPO_ROOT / "migrations"
@@ -77,6 +79,25 @@ def _wait_for_socket(path: Path, timeout: float = 2.0) -> None:
             pass
         time.sleep(0.01)
     raise TimeoutError(f"socket {path} did not appear within {timeout:.1f}s")
+
+
+def _seed_projection_workday_log(repo: EventsRepository) -> None:
+    eid = 0
+    for case_date, activities in [
+        ("2026-01-01", ("A", "B", "C")),
+        ("2026-01-02", ("A", "B", "C")),
+        ("2026-01-03", ("A", "B", "C")),
+    ]:
+        for hour, activity in enumerate(activities, start=9):
+            eid += 1
+            repo.append_event(
+                event_id=f"proj-{eid}",
+                case_id=f"case-{case_date}",
+                activity=activity,
+                timestamp=f"{case_date}T{hour:02d}:00:00Z",
+                lifecycle="complete",
+                extractor_version="v0",
+            )
 
 
 @contextmanager
@@ -314,6 +335,108 @@ def test_daemon_record_thumbs_round_trip(tmp_path: Path) -> None:
             thumbs=True,
         )
     assert result == {"recorded": True}
+
+
+# ---------------------------------------------------------- Kuzu projection
+
+
+def test_handle_rebuild_kuzu_projection_workday_success(tmp_path: Path) -> None:
+    db = _prepare_db(tmp_path)
+    daemon = TMDaemon(db_path=db, socket_path=tmp_path / "unused.sock")
+    _seed_projection_workday_log(EventsRepository(db))
+    kuzu_path = tmp_path / "kuzu"
+
+    result = daemon._handle_rebuild_kuzu_projection(
+        {
+            "lens": "workday",
+            "since": "2026-01-01",
+            "until": "2026-01-31",
+            "kuzu_db_path": str(kuzu_path),
+        }
+    )
+
+    assert result["ok"] is True
+    model_id = result["model_id"]
+    assert isinstance(model_id, str)
+    assert re.fullmatch(r"[0-9a-f]{64}", model_id)
+    assert result["lens"] == "workday"
+    assert result["since"] == "2026-01-01"
+    assert result["until"] == "2026-01-31"
+    assert result["place_count"] > 0
+    assert result["transition_count"] > 0
+    assert result["arc_count"] > 0
+    assert result["case_event_count"] == 9
+
+    kuzu = KuzuStore(kuzu_path)
+    try:
+        model_ids = {model.model_id for model in kuzu.list_models()}
+        net = kuzu.get_petri_net(model_id)
+    finally:
+        kuzu.close()
+    assert model_id in model_ids
+    assert net is not None
+    assert len(net.places) > 0
+
+
+def test_handle_rebuild_kuzu_projection_empty_log(tmp_path: Path) -> None:
+    db = _prepare_db(tmp_path)
+    daemon = TMDaemon(db_path=db, socket_path=tmp_path / "unused.sock")
+    repo = EventsRepository(db)
+    repo.append_event(
+        event_id="outside-window",
+        case_id="case-1",
+        activity="A",
+        timestamp="2026-01-01T09:00:00Z",
+        lifecycle="complete",
+    )
+    kuzu_path = tmp_path / "kuzu"
+
+    result = daemon._handle_rebuild_kuzu_projection(
+        {
+            "lens": "workday",
+            "since": "2026-02-01",
+            "until": "2026-02-28",
+            "kuzu_db_path": str(kuzu_path),
+        }
+    )
+
+    assert result == {"ok": True, "model_id": None, "skipped": "empty_log"}
+    kuzu = KuzuStore(kuzu_path)
+    try:
+        assert kuzu.list_models() == []
+    finally:
+        kuzu.close()
+
+
+def test_handle_rebuild_kuzu_projection_invalid_lens(tmp_path: Path) -> None:
+    db = _prepare_db(tmp_path)
+    daemon = TMDaemon(db_path=db, socket_path=tmp_path / "unused.sock")
+
+    result = daemon._handle_rebuild_kuzu_projection(
+        {"lens": "garbage", "kuzu_db_path": str(tmp_path / "kuzu")}
+    )
+
+    assert result["ok"] is False
+    assert result["error"] == "ValueError"
+    assert "lens" in result["detail"]
+
+
+def test_handle_rebuild_kuzu_projection_missing_kuzu_path(tmp_path: Path) -> None:
+    db = _prepare_db(tmp_path)
+    daemon = TMDaemon(db_path=db, socket_path=tmp_path / "unused.sock")
+
+    result = daemon._handle_rebuild_kuzu_projection({"lens": "workday"})
+
+    assert result["ok"] is False
+    assert result["error"] == "ValueError"
+    assert "kuzu_db_path" in result["detail"]
+
+
+def test_dispatch_table_includes_rebuild_kuzu_projection(tmp_path: Path) -> None:
+    db = _prepare_db(tmp_path)
+    daemon = TMDaemon(db_path=db, socket_path=tmp_path / "unused.sock")
+
+    assert "rebuild_kuzu_projection" in daemon._handlers
 
 
 # --------------------------------------------------------------- cost meter

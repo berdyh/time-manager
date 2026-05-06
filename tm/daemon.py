@@ -66,6 +66,7 @@ Out of scope (deliberately deferred)
 from __future__ import annotations
 
 import errno
+import hashlib
 import json
 import logging
 import os
@@ -76,16 +77,20 @@ import threading
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from typing import Any
 
 from tm._paths import default_data_dir
+from tm.engines.process_mining import ProcessMiner
 from tm.llm.cost_meter import CostMeter
 from tm.llm.errors import CostCapExceeded
 from tm.repositories.events import EventsRepository
 from tm.repositories.goals import GoalsRepository
 from tm.repositories.telemetry import SuggestionTelemetryRepository
 from tm.repositories.vocabulary import VocabularyRepository
+from tm.stores.kuzu_projection import rebuild_kuzu_projection
+from tm.stores.kuzu_store import KuzuStore, PersistedModel, PetriNetData
 from tm.stores.sqlite_store import SQLiteStore
 
 __all__ = [
@@ -264,6 +269,7 @@ class TMDaemon:
             "log_suggestion": self._handle_log_suggestion,
             "record_actual_outcome": self._handle_record_actual_outcome,
             "record_thumbs": self._handle_record_thumbs,
+            "rebuild_kuzu_projection": self._handle_rebuild_kuzu_projection,
             "check_budget": self._handle_check_budget,
             "record_cost": self._handle_record_cost,
         }
@@ -554,6 +560,67 @@ class TMDaemon:
         self._telemetry.record_thumbs(**params)
         return {"recorded": True}
 
+    # ----- Kuzu projection -----
+
+    def _handle_rebuild_kuzu_projection(self, params: dict[str, Any]) -> Any:
+        """Operator-triggered rebuild of the Kuzu process-model projection."""
+        try:
+            lens = _projection_lens(params.get("lens"))
+            since = _optional_iso_date(params.get("since"), key="since")
+            until = _optional_iso_date(params.get("until"), key="until")
+            kuzu_db_path = _required_path_string(
+                params.get("kuzu_db_path"), key="kuzu_db_path"
+            )
+
+            events_repo = EventsRepository(self._db_path)
+            process_miner = ProcessMiner(events_repo)
+            kuzu_store: KuzuStore | None = None
+            try:
+                kuzu_store = KuzuStore(kuzu_db_path)
+                persisted = rebuild_kuzu_projection(
+                    events_repo=events_repo,
+                    kuzu_store=kuzu_store,
+                    process_miner=process_miner,
+                    lens=lens,
+                    since=since,
+                    until=until,
+                )
+                if persisted.case_count == 0:
+                    kuzu_store.delete_model(persisted.model_id)
+                    return {"ok": True, "model_id": None, "skipped": "empty_log"}
+
+                response_model_id = _sha256_hex(persisted.model_id)
+                net = _move_projection_model_id(
+                    kuzu_store=kuzu_store,
+                    persisted=persisted,
+                    target_model_id=response_model_id,
+                )
+                return {
+                    "ok": True,
+                    "model_id": response_model_id,
+                    "lens": persisted.lens,
+                    "since": persisted.since,
+                    "until": persisted.until,
+                    "place_count": len(net.places),
+                    "transition_count": len(net.transitions),
+                    "arc_count": len(net.arcs),
+                    "case_event_count": _count_projection_case_events(
+                        events_repo=events_repo,
+                        lens=lens,
+                        since=since,
+                        until=until,
+                    ),
+                }
+            finally:
+                if kuzu_store is not None:
+                    kuzu_store.close()
+        except Exception as exc:  # noqa: BLE001 - RPC contract returns structured errors
+            return {
+                "ok": False,
+                "error": type(exc).__name__,
+                "detail": str(exc),
+            }
+
     # ----- cost meter -----
 
     def _handle_check_budget(self, params: dict[str, Any]) -> Any:
@@ -607,6 +674,83 @@ def _suggestion_to_dict(rec: Any) -> dict[str, Any]:
         "llm_explanation_text": rec.llm_explanation_text,
         "created_at": rec.created_at,
     }
+
+
+def _projection_lens(value: Any) -> str:
+    if value not in ("workday", "goal_pursuit"):
+        raise ValueError("lens must be one of: workday, goal_pursuit")
+    return str(value)
+
+
+def _optional_iso_date(value: Any, *, key: str) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{key} must be an ISO date string or null")
+    try:
+        date.fromisoformat(value)
+    except ValueError as exc:
+        raise ValueError(f"{key} must be an ISO date string: {value!r}") from exc
+    return value
+
+
+def _required_path_string(value: Any, *, key: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{key} must be a non-empty path string")
+    return value
+
+
+def _sha256_hex(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _move_projection_model_id(
+    *,
+    kuzu_store: KuzuStore,
+    persisted: PersistedModel,
+    target_model_id: str,
+) -> PetriNetData:
+    net = kuzu_store.get_petri_net(persisted.model_id)
+    if net is None:
+        raise RuntimeError("persisted Kuzu model was not readable after rebuild")
+    if target_model_id == persisted.model_id:
+        return net
+
+    kuzu_store.persist_model(
+        model_id=target_model_id,
+        net_data=net,
+        lens=persisted.lens,
+        since=persisted.since,
+        until=persisted.until,
+        fitness=persisted.fitness,
+        precision=persisted.precision,
+        case_count=persisted.case_count,
+        activity_count=persisted.activity_count,
+        discovered_at=persisted.discovered_at,
+    )
+    kuzu_store.delete_model(persisted.model_id)
+    return net
+
+
+def _count_projection_case_events(
+    *,
+    events_repo: EventsRepository,
+    lens: str,
+    since: str | None,
+    until: str | None,
+) -> int:
+    events = events_repo.query_events(since=since, until=until)
+    if lens == "workday":
+        return sum(
+            1
+            for event in events
+            if event.get("case_date") and event.get("activity") != "debrief_summary"
+        )
+    return sum(
+        1
+        for event in events
+        if event.get("case_goal_id") and event.get("activity") != "debrief_summary"
+    )
 
 
 # --------------------------------------------------------------------- LineReader
