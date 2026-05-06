@@ -54,6 +54,10 @@ __all__ = [
 
 CaseLens = Literal["workday", "goal_pursuit"]
 
+# Activity labels emitted by synthetic agents (e.g., DebriefAgent's summary event)
+# that should be excluded from process-mining analysis by default.
+_SYNTHETIC_SUMMARY_ACTIVITIES: frozenset[str] = frozenset({"debrief_summary"})
+
 
 # ---------------------------------------------------------------------------
 # Public dataclasses
@@ -264,6 +268,7 @@ class ProcessMiner:
         since: str | None,
         until: str | None,
         case_id: str | None = None,
+        include_summary_events: bool = False,
     ) -> pd.DataFrame:
         # EventsRepository.query_events sorts by (timestamp, event_id); we
         # re-sort by (case_id, timestamp) inside _events_to_dataframe so the
@@ -273,6 +278,12 @@ class ProcessMiner:
             since=since,
             until=until,
         )
+        if not include_summary_events:
+            events = [
+                e
+                for e in events
+                if e.get("activity") not in _SYNTHETIC_SUMMARY_ACTIVITIES
+            ]
         return _events_to_dataframe(events, lens)
 
     @staticmethod
@@ -302,6 +313,7 @@ class ProcessMiner:
         since: str | None = None,
         until: str | None = None,
         case_id: str | None = None,
+        include_summary_events: bool = False,
     ) -> DiscoveredModel:
         """Discover a process tree + Petri net via the Inductive Miner.
 
@@ -309,7 +321,13 @@ class ProcessMiner:
         than calling PM4Py with an empty frame (PM4Py tolerates it but the
         downstream replay is undefined).
         """
-        df = self._load_dataframe(lens=lens, since=since, until=until, case_id=case_id)
+        df = self._load_dataframe(
+            lens=lens,
+            since=since,
+            until=until,
+            case_id=case_id,
+            include_summary_events=include_summary_events,
+        )
 
         metadata = self._base_metadata(lens=lens, since=since, until=until)
         metadata["case_id"] = case_id
@@ -376,6 +394,7 @@ class ProcessMiner:
         lens: CaseLens,
         since: str | None = None,
         until: str | None = None,
+        include_summary_events: bool = False,
     ) -> ConformanceResult:
         """Run token-based replay over the lens window.
 
@@ -389,7 +408,12 @@ class ProcessMiner:
         Once T-PM-03 lands (Kuzu projection), the rehydration step will
         fetch the persisted net instead of re-mining.
         """
-        replay_df = self._load_dataframe(lens=lens, since=since, until=until)
+        replay_df = self._load_dataframe(
+            lens=lens,
+            since=since,
+            until=until,
+            include_summary_events=include_summary_events,
+        )
 
         metadata = self._base_metadata(lens=lens, since=since, until=until)
         metadata["source_process_tree"] = model.process_tree_repr
@@ -415,6 +439,7 @@ class ProcessMiner:
             since=model_meta.get("since"),
             until=model_meta.get("until"),
             case_id=model_meta.get("case_id"),
+            include_summary_events=include_summary_events,
         )
         rehydration_fallback_used = model_df.empty
         if rehydration_fallback_used:
@@ -471,9 +496,15 @@ class ProcessMiner:
         since: str | None = None,
         until: str | None = None,
         top_n: int | None = None,
+        include_summary_events: bool = False,
     ) -> VariantAnalysis:
         """Group cases by their distinct activity sequences."""
-        df = self._load_dataframe(lens=lens, since=since, until=until)
+        df = self._load_dataframe(
+            lens=lens,
+            since=since,
+            until=until,
+            include_summary_events=include_summary_events,
+        )
 
         metadata = self._base_metadata(lens=lens, since=since, until=until)
         metadata["top_n"] = top_n
@@ -531,9 +562,15 @@ class ProcessMiner:
         lens: CaseLens,
         since: str | None = None,
         until: str | None = None,
+        include_summary_events: bool = False,
     ) -> PerformanceAnalysis:
         """Compute per-activity sojourn metrics + DFG edge throughputs."""
-        df = self._load_dataframe(lens=lens, since=since, until=until)
+        df = self._load_dataframe(
+            lens=lens,
+            since=since,
+            until=until,
+            include_summary_events=include_summary_events,
+        )
 
         metadata = self._base_metadata(lens=lens, since=since, until=until)
 
