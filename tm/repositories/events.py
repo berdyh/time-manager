@@ -9,6 +9,13 @@ consumers (T-OUT-01, T-PM-02, etc.) must filter ``case_date <> ''`` if they read
 events directly.  ``_derive_case_date`` never returns ``''`` — it raises
 ``ValueError`` on malformed input instead.
 
+**until semantics differ by filter domain:** ``query_events(since=None,
+until=None)`` filters continuous timestamps and treats ``until`` as an
+exclusive upper bound (``timestamp < ?``), matching standard half-open time
+intervals.  ``list_distinct_case_dates(since=None, until=None)`` filters
+discrete day-bucket strings and treats ``until`` as inclusive
+(``case_date <= ?``), matching the human reading of "from May 1 to May 31".
+
 Design notes:
 - Opens a fresh ``sqlite3.Connection`` per call (no shared long-lived connection).
 - ``advances_goal`` is stored as a soft FK (TEXT column, no REFERENCES constraint).
