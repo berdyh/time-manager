@@ -328,3 +328,39 @@ def test_delta_outcome_summary_some_rows_with_actual_others_without(
     assert abs(summary["mean_predicted_delta"] - 0.75) < 1e-9
     # mean actual minus predicted: ((2-1.0) + (0-0.5)) / 2 = 0.25
     assert abs(summary["mean_actual_minus_predicted"] - 0.25) < 1e-9
+
+
+# ---------------------------------------------------------------------------
+# count_for_case_date
+# ---------------------------------------------------------------------------
+
+
+def test_count_for_case_date_returns_zero_for_missing_date(tmp_path: Path) -> None:
+    repo = _make_repo(tmp_path / "tm.db")
+
+    assert repo.count_for_case_date("2026-05-05") == 0
+
+
+def test_count_for_case_date_counts_only_matching_date(tmp_path: Path) -> None:
+    repo = _make_repo(tmp_path / "tm.db")
+    repo.log_suggestion(
+        case_date="2026-05-05",
+        recommended_action="action_a",
+        predicted_outcome_with=1.0,
+        predicted_outcome_without=0.5,
+    )
+    repo.log_suggestion(
+        case_date="2026-05-05",
+        recommended_action="action_b",
+        predicted_outcome_with=1.2,
+        predicted_outcome_without=0.4,
+    )
+    repo.log_suggestion(
+        case_date="2026-05-06",
+        recommended_action="action_c",
+        predicted_outcome_with=1.1,
+        predicted_outcome_without=0.6,
+    )
+
+    assert repo.count_for_case_date("2026-05-05") == 2
+    assert repo.count_for_case_date("2026-05-06") == 1

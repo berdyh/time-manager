@@ -304,6 +304,21 @@ class SuggestionTelemetryRepository:
 
         return [_row_to_record(r) for r in rows]
 
+    def count_for_case_date(self, case_date: str) -> int:
+        """Return the number of suggestions logged for ``case_date``."""
+        conn = _open_conn(self._db_path)
+        try:
+            row = conn.execute(
+                "SELECT COUNT(*) AS cnt FROM suggestion_telemetry "
+                "INDEXED BY idx_suggestion_telemetry_case_date "
+                "WHERE case_date = ?",
+                (case_date,),
+            ).fetchone()
+        finally:
+            conn.close()
+
+        return int(row["cnt"]) if row is not None else 0
+
     def delta_outcome_summary(
         self,
         *,

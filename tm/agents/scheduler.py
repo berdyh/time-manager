@@ -351,16 +351,7 @@ class SchedulerAgent:
         # ------------------------------------------------------------
         # 1. Rate-limit check.
         # ------------------------------------------------------------
-        # SuggestionTelemetryRepository has no count_for_case_date helper, and
-        # list_recent only filters by suggested_at — but we want suggestions
-        # logged FOR a given case_date irrespective of when they were
-        # generated. The case_date column lives on every row, so we read all
-        # recent rows and filter in Python. The window is bounded enough that
-        # this is cheap; a follow-up could add a dedicated repo method.
-        existing_today = [
-            r for r in self._telemetry.list_recent() if r.case_date == case_date
-        ]
-        existing_count = len(existing_today)
+        existing_count = self._telemetry.count_for_case_date(case_date)
         if existing_count >= self._max_per_day:
             return SchedulerSkipReason(
                 reason="rate_limited",
@@ -390,10 +381,14 @@ class SchedulerAgent:
         # ------------------------------------------------------------
         # 3. Pre-call cost estimate + budget gate.
         # ------------------------------------------------------------
-        # The serialized payload bounds input tokens; we conservatively use
-        # the system prompt + payload length as the input estimate.
+        # The serialized payload bounds input tokens; estimate from the exact
+        # message body passed to the LLM so the wrapper tags are included.
         payload_text = _format_context_payload(context_payload)
-        est_input_tokens = max(1, (len(self._system_prompt) + len(payload_text)) // 4)
+        sanitized = _sanitize_user_message_wrapper(payload_text)
+        user_content = (
+            f"{self._system_prompt}\n\n<user_message>\n{sanitized}\n</user_message>"
+        )
+        est_input_tokens = max(1, len(user_content.encode("utf-8")) // 4)
         cost_estimated = estimate_cost_usd(
             model=self._model,
             input_tokens=est_input_tokens,
@@ -410,10 +405,6 @@ class SchedulerAgent:
         # in <user_message>...</user_message> tags so the model treats it
         # as data per the SYSTEM_PROMPT instructions. Sanitize any literal
         # closing tag in the payload to prevent wrapper escape.
-        sanitized = _sanitize_user_message_wrapper(payload_text)
-        user_content = (
-            f"{self._system_prompt}\n\n<user_message>\n{sanitized}\n</user_message>"
-        )
         result = self._llm.extract(
             messages=[Message(role="user", content=user_content)],
             schema=CANDIDATE_SCHEMA,
