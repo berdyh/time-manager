@@ -615,3 +615,229 @@ def test_daemon_disk_space_pre_check_fails_when_low(tmp_path: Path) -> None:
     with patch("tm.resilience.shutil.disk_usage", return_value=_FakeUsage):
         with pytest.raises(ResilienceError, match="MB free"):
             disk_space_pre_check(tmp_path / "tm.db", min_free_mb=50)
+
+
+# ============================================================ LLM-backed RPCs
+#
+# These tests exercise the daemon's run_debrief / propose_suggestion handlers
+# without spending real Anthropic tokens: they patch the module-level
+# ``tm.daemon._build_llm_client`` factory so the daemon constructs a Mock
+# LLMClient instead of a live AnthropicAdapter. The TM_LLM_API_KEY check fires
+# AT REQUEST TIME, so tests can enable / disable that path purely via
+# ``monkeypatch.setenv`` / ``monkeypatch.delenv``.
+
+
+def _llm_extract_response(data: dict[str, object]) -> object:
+    """Build an :class:`ExtractResponse` shaped like a successful LLM call."""
+    from tm.llm.client import ExtractResponse, Usage
+
+    return ExtractResponse(
+        data=data,
+        usage=Usage(input_tokens=1, output_tokens=1),
+    )
+
+
+def _make_mock_llm(extract_data: dict[str, object]):
+    """Return a Mock LLMClient whose ``.extract`` returns the canned data."""
+    from unittest.mock import Mock
+
+    llm = Mock()
+    llm.extract.return_value = _llm_extract_response(extract_data)
+    return llm
+
+
+# ----- run_debrief ---------------------------------------------------------
+
+
+def test_handle_run_debrief_dispatch_registered(tmp_path: Path) -> None:
+    """The dispatch table must include the new RPC method."""
+    db = _prepare_db(tmp_path)
+    daemon = TMDaemon(db_path=db, socket_path=tmp_path / "unused.sock")
+    assert "run_debrief" in daemon._handlers
+
+
+def test_handle_run_debrief_missing_api_key(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without TM_LLM_API_KEY, the handler returns a structured error."""
+    monkeypatch.delenv("TM_LLM_API_KEY", raising=False)
+    db = _prepare_db(tmp_path)
+    daemon = TMDaemon(db_path=db, socket_path=tmp_path / "unused.sock")
+
+    result = daemon._handle_run_debrief(
+        {
+            "transcript": "I shipped the daemon handlers today.",
+            "case_date": "2026-05-06",
+        }
+    )
+    assert result["ok"] is False
+    assert result["error"] == "MissingApiKey"
+    assert "TM_LLM_API_KEY" in result["detail"]
+
+
+def test_handle_run_debrief_empty_transcript(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An empty transcript must surface as a structured ValueError."""
+    monkeypatch.setenv("TM_LLM_API_KEY", "test-key")
+    db = _prepare_db(tmp_path)
+    daemon = TMDaemon(db_path=db, socket_path=tmp_path / "unused.sock")
+
+    result = daemon._handle_run_debrief({"transcript": "", "case_date": "2026-05-06"})
+    assert result["ok"] is False
+    assert result["error"] == "ValueError"
+    assert "transcript" in result["detail"]
+
+
+def test_handle_run_debrief_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Mock the LLM extract; assert events are persisted and JSON shape matches."""
+    monkeypatch.setenv("TM_LLM_API_KEY", "test-key")
+    db = _prepare_db(tmp_path)
+    # Seed the starter vocabulary so the VocabAligner takes the fast path
+    # (no LLM hop) for ``deep_work``.
+    VocabularyRepository(db).seed_starter_vocabulary()
+    daemon = TMDaemon(db_path=db, socket_path=tmp_path / "unused.sock")
+
+    extract_data = {
+        "events": [
+            {
+                "activity": "deep_work",
+                "timestamp": "2026-05-06T10:00:00Z",
+                "lifecycle": "complete",
+            },
+        ],
+        "summary": {"planned_tasks_completed": 1, "planned_tasks_total": 2},
+    }
+    llm = _make_mock_llm(extract_data)
+
+    with patch("tm.daemon._build_llm_client", return_value=llm):
+        result = daemon._handle_run_debrief(
+            {
+                "transcript": "I did deep work all morning.",
+                "case_date": "2026-05-06",
+            }
+        )
+
+    assert result["ok"] is True, result
+    assert result["case_date"] == "2026-05-06"
+    # 1 activity event + 1 summary event = 2 persisted rows.
+    assert result["events_persisted"] >= 1
+    assert result["summary_event_persisted"] is True
+    assert isinstance(result["novel_labels"], list)
+    assert isinstance(result["summary"], dict)
+    assert result["summary"]["planned_tasks_completed"] == 1
+    assert result["summary"]["planned_tasks_total"] == 2
+    assert result["extractor_version"] == "debrief-v1"
+    assert "extracted_at" in result
+    assert isinstance(result["cost_estimated_usd"], float)
+    assert isinstance(result["cost_actual_usd"], float)
+    # Confirm the event landed.
+    rows = EventsRepository(db).query_events(case_date="2026-05-06")
+    assert any(e.get("activity") == "deep_work" for e in rows)
+
+
+# ----- propose_suggestion --------------------------------------------------
+
+
+def test_handle_propose_suggestion_dispatch_registered(tmp_path: Path) -> None:
+    """The dispatch table must include the new RPC method."""
+    db = _prepare_db(tmp_path)
+    daemon = TMDaemon(db_path=db, socket_path=tmp_path / "unused.sock")
+    assert "propose_suggestion" in daemon._handlers
+
+
+def test_handle_propose_suggestion_missing_api_key(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without TM_LLM_API_KEY, the handler returns a structured error."""
+    monkeypatch.delenv("TM_LLM_API_KEY", raising=False)
+    db = _prepare_db(tmp_path)
+    daemon = TMDaemon(db_path=db, socket_path=tmp_path / "unused.sock")
+
+    result = daemon._handle_propose_suggestion({"case_date": "2026-05-06"})
+    assert result["ok"] is False
+    assert result["error"] == "MissingApiKey"
+    assert "TM_LLM_API_KEY" in result["detail"]
+
+
+def test_handle_propose_suggestion_empty_context(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An empty events table → SchedulerAgent returns empty_context skip reason."""
+    monkeypatch.setenv("TM_LLM_API_KEY", "test-key")
+    db = _prepare_db(tmp_path)
+    daemon = TMDaemon(db_path=db, socket_path=tmp_path / "unused.sock")
+
+    # No events, no goals seeded → context is empty and the LLM is never called.
+    # We still patch the factory so the handler doesn't try to construct a real
+    # AnthropicAdapter (which would attempt SDK initialisation).
+    from unittest.mock import Mock
+
+    llm = Mock()  # extract is never called on the empty_context path
+    with patch("tm.daemon._build_llm_client", return_value=llm):
+        result = daemon._handle_propose_suggestion({"case_date": "2026-05-06"})
+
+    assert result["ok"] is True
+    assert result["kind"] == "skipped"
+    assert result["reason"] == "empty_context"
+    assert "case_date=" in result["detail"]
+    # Confirm the LLM was NOT consulted on this skip path.
+    llm.extract.assert_not_called()
+
+
+def test_handle_propose_suggestion_with_suggestion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Past empty_context: seed an active goal so context is non-empty, mock LLM
+    to return a candidate that all three guardrails accept, assert the wire
+    payload carries kind='suggestion' plus the predicted-outcome fields.
+    """
+    monkeypatch.setenv("TM_LLM_API_KEY", "test-key")
+    db = _prepare_db(tmp_path)
+    daemon = TMDaemon(db_path=db, socket_path=tmp_path / "unused.sock")
+
+    # Seed an active goal so _build_context_payload returns a non-empty
+    # ``active_goals`` list. That alone makes _context_is_empty() return False.
+    GoalsRepository(db).add(name="Ship daemon CLI wiring", priority=1)
+
+    # The candidate must clear all three guardrails:
+    # 1. SimpleCounterfactualPositiveGuard: predicted_outcome_with > without
+    # 2. CounterfactualMagnitudeGuard: delta >= 0.3
+    # 3. ConformanceGuard: predicted_post_suggestion_fitness >= 0.4
+    extract_data = {
+        "recommended_action": "Take a 15-minute break before tackling task X",
+        "predicted_outcome_with": 1.4,
+        "predicted_outcome_without": 0.9,
+        "predicted_post_suggestion_fitness": 0.88,
+        "explanation": "A short reset usually precedes better deep work.",
+    }
+    llm = _make_mock_llm(extract_data)
+
+    with patch("tm.daemon._build_llm_client", return_value=llm):
+        result = daemon._handle_propose_suggestion(
+            {"case_date": "2026-05-06", "max_per_day": 3}
+        )
+
+    assert result["ok"] is True, result
+    assert result["kind"] == "suggestion"
+    assert result["case_date"] == "2026-05-06"
+    assert (
+        result["recommended_action"] == "Take a 15-minute break before tackling task X"
+    )
+    assert result["predicted_outcome_with"] == pytest.approx(1.4)
+    assert result["predicted_outcome_without"] == pytest.approx(0.9)
+    assert result["predicted_outcome_delta"] == pytest.approx(0.5)
+    assert result["conformance_deviation"] == pytest.approx(1.0 - 0.88)
+    assert "deep work" in result["llm_explanation_text"]
+    assert result["scheduler_version"] == "scheduler-v1"
+    assert isinstance(result["suggestion_id"], str) and result["suggestion_id"]
+    assert "suggested_at" in result
+    llm.extract.assert_called_once()

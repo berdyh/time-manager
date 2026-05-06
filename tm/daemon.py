@@ -82,8 +82,12 @@ from typing import Any
 
 from tm._paths import default_data_dir
 from tm.engines.process_mining import ProcessMiner
+from tm.engines.variant_cluster import VariantClusterer
+from tm.llm.anthropic_adapter import AnthropicAdapter
+from tm.llm.client import LLMClient
 from tm.llm.cost_meter import CostMeter
-from tm.llm.errors import CostCapExceeded
+from tm.llm.errors import CostCapExceeded, LLMClientError
+from tm.models.outcome import OutcomeAggregator
 from tm.repositories.events import EventsRepository
 from tm.repositories.goals import GoalsRepository
 from tm.repositories.telemetry import SuggestionTelemetryRepository
@@ -91,6 +95,7 @@ from tm.repositories.vocabulary import VocabularyRepository
 from tm.stores.kuzu_projection import rebuild_kuzu_projection
 from tm.stores.kuzu_store import KuzuStore
 from tm.stores.sqlite_store import SQLiteStore
+from tm.vocab_alignment import VocabAligner
 
 __all__ = [
     "DEFAULT_SOCKET_NAME",
@@ -128,6 +133,24 @@ WORKER_JOIN_TIMEOUT_S = 5.0
 
 
 _log = logging.getLogger(__name__)
+
+
+# Env var carrying the LLM API key. Defined as a module constant rather than
+# imported from ``tm.llm.anthropic_adapter`` (which has a private ``_ENV_API_KEY``)
+# so the daemon can fail fast at handler-call time WITHOUT triggering the
+# adapter's own constructor-time check (which would raise LLMClientError with
+# the wire-incompatible "TM_LLM_API_KEY not set" message).
+_LLM_API_KEY_ENV_VAR = "TM_LLM_API_KEY"
+
+
+def _build_llm_client(model: str, max_tokens: int) -> LLMClient:
+    """Construct the LLMClient used by the daemon's LLM-backed handlers.
+
+    Tests patch this factory (rather than ``AnthropicAdapter`` directly) to
+    inject a mock LLMClient without spending real API tokens. The factory is
+    a module-level function so ``unittest.mock.patch`` resolves it cleanly.
+    """
+    return AnthropicAdapter(model=model, max_tokens=max_tokens)
 
 
 # ---------------------------------------------------------------------- types
@@ -271,6 +294,8 @@ class TMDaemon:
             "rebuild_kuzu_projection": self._handle_rebuild_kuzu_projection,
             "check_budget": self._handle_check_budget,
             "record_cost": self._handle_record_cost,
+            "run_debrief": self._handle_run_debrief,
+            "propose_suggestion": self._handle_propose_suggestion,
         }
 
     # --------------------------------------------------------------- accessors
@@ -635,6 +660,216 @@ class TMDaemon:
             request_kind=str(params["request_kind"]),
         )
         return {"est_cost_usd": cost}
+
+    # ----- LLM-backed agents (debrief + scheduler) -----
+
+    def _handle_run_debrief(self, params: dict[str, Any]) -> Any:
+        """Run a one-shot debrief extraction without spinning up a new process.
+
+        Constructs a per-call :class:`DebriefAgent` (matching the existing
+        per-call pattern used elsewhere in the daemon) but reuses the daemon's
+        long-lived :class:`CostMeter` singleton so soft-alarm semantics stay
+        consistent across requests. The TM_LLM_API_KEY check happens AT REQUEST
+        TIME — the daemon must continue to start fine without the key set.
+        """
+        # Local imports keep daemon module load cheap when these handlers are
+        # never called.
+        from tm.agents.debrief import DebriefAgent
+
+        try:
+            transcript = params.get("transcript")
+            if not isinstance(transcript, str) or not transcript.strip():
+                raise ValueError("transcript must be a non-empty string")
+
+            case_date_raw = params.get("case_date")
+            if not isinstance(case_date_raw, str) or not case_date_raw:
+                raise ValueError("case_date must be a non-empty string")
+
+            model = params.get("model")
+            model_str = str(model) if isinstance(model, str) and model else None
+            max_tokens = params.get("max_tokens")
+            max_tokens_int = int(max_tokens) if isinstance(max_tokens, int) else None
+
+            if not os.environ.get(_LLM_API_KEY_ENV_VAR):
+                return {
+                    "ok": False,
+                    "error": "MissingApiKey",
+                    "detail": (
+                        f"{_LLM_API_KEY_ENV_VAR} environment variable is not set"
+                    ),
+                }
+
+            # Build LLM client + agent dependencies per-request. The factory
+            # is module-level so tests can patch it cleanly.
+            try:
+                llm = _build_llm_client(
+                    model=model_str or "claude-sonnet-4-6",
+                    max_tokens=max_tokens_int or 4096,
+                )
+            except LLMClientError as exc:
+                # Adapter construction failed (e.g. SDK couldn't initialise).
+                return {
+                    "ok": False,
+                    "error": type(exc).__name__,
+                    "detail": str(exc),
+                }
+
+            vocab_repo = VocabularyRepository(self._db_path)
+            events_repo = EventsRepository(self._db_path)
+            goals_repo = GoalsRepository(self._db_path)
+            aligner = VocabAligner(vocab_repo, llm)
+
+            agent_kwargs: dict[str, Any] = {
+                "llm_client": llm,
+                "vocab_aligner": aligner,
+                "goals_repo": goals_repo,
+                "events_repo": events_repo,
+                "cost_meter": self._cost_meter,
+            }
+            if model_str is not None:
+                agent_kwargs["model"] = model_str
+            if max_tokens_int is not None:
+                agent_kwargs["max_tokens"] = max_tokens_int
+
+            agent = DebriefAgent(**agent_kwargs)
+            result = agent.extract_and_persist(
+                transcript=transcript,
+                case_date=case_date_raw,
+            )
+            return {
+                "ok": True,
+                "case_date": result.case_date,
+                "events_persisted": result.events_persisted,
+                "summary_event_persisted": result.summary_event_persisted,
+                "novel_labels": list(result.novel_labels),
+                "summary": dict(result.summary),
+                "cost_estimated_usd": result.cost_estimated_usd,
+                "cost_actual_usd": result.cost_actual_usd,
+                "extractor_version": result.extractor_version,
+                "extracted_at": result.extracted_at,
+            }
+        except Exception as exc:  # noqa: BLE001 - RPC contract returns structured errors
+            return {
+                "ok": False,
+                "error": type(exc).__name__,
+                "detail": str(exc),
+            }
+
+    def _handle_propose_suggestion(self, params: dict[str, Any]) -> Any:
+        """Run one scheduler propose-suggestion cycle without a new process.
+
+        Mirrors :meth:`_handle_run_debrief`'s per-call construction pattern but
+        wires the scheduler agent's full dependency tree. Returns either a
+        ``kind="suggestion"`` payload or a ``kind="skipped"`` payload.
+        """
+        from tm.agents.scheduler import (
+            ScheduledSuggestion,
+            SchedulerAgent,
+            SchedulerSkipReason,
+        )
+
+        try:
+            case_date_raw = params.get("case_date")
+            if not isinstance(case_date_raw, str) or not case_date_raw:
+                raise ValueError("case_date must be a non-empty string")
+
+            case_goal_id_raw = params.get("case_goal_id")
+            if case_goal_id_raw is not None and not isinstance(case_goal_id_raw, str):
+                raise ValueError("case_goal_id must be a string or null")
+            case_goal_id = case_goal_id_raw or None
+
+            model = params.get("model")
+            model_str = str(model) if isinstance(model, str) and model else None
+            max_per_day_raw = params.get("max_per_day")
+            max_per_day = (
+                int(max_per_day_raw) if isinstance(max_per_day_raw, int) else None
+            )
+
+            if not os.environ.get(_LLM_API_KEY_ENV_VAR):
+                return {
+                    "ok": False,
+                    "error": "MissingApiKey",
+                    "detail": (
+                        f"{_LLM_API_KEY_ENV_VAR} environment variable is not set"
+                    ),
+                }
+
+            try:
+                llm = _build_llm_client(
+                    model=model_str or "claude-sonnet-4-6",
+                    max_tokens=1024,
+                )
+            except LLMClientError as exc:
+                return {
+                    "ok": False,
+                    "error": type(exc).__name__,
+                    "detail": str(exc),
+                }
+
+            events_repo = EventsRepository(self._db_path)
+            goals_repo = GoalsRepository(self._db_path)
+            telemetry_repo = SuggestionTelemetryRepository(self._db_path)
+            outcome_aggregator = OutcomeAggregator(events_repo)
+            process_miner = ProcessMiner(events_repo)
+            variant_clusterer = VariantClusterer(events_repo, outcome_aggregator)
+
+            agent_kwargs: dict[str, Any] = {
+                "llm_client": llm,
+                "process_miner": process_miner,
+                "variant_clusterer": variant_clusterer,
+                "outcome_aggregator": outcome_aggregator,
+                "telemetry_repo": telemetry_repo,
+                "events_repo": events_repo,
+                "goals_repo": goals_repo,
+                "cost_meter": self._cost_meter,
+                "max_proactive_per_day": max_per_day,
+            }
+            if model_str is not None:
+                agent_kwargs["model"] = model_str
+
+            agent = SchedulerAgent(**agent_kwargs)
+            outcome = agent.propose_suggestion(
+                case_date=case_date_raw,
+                case_goal_id=case_goal_id,
+            )
+
+            if isinstance(outcome, SchedulerSkipReason):
+                return {
+                    "ok": True,
+                    "kind": "skipped",
+                    "reason": outcome.reason,
+                    "detail": outcome.detail,
+                }
+
+            assert isinstance(outcome, ScheduledSuggestion)  # narrow for mypy
+            candidate = outcome.candidate
+            return {
+                "ok": True,
+                "kind": "suggestion",
+                "suggestion_id": outcome.suggestion_id,
+                "case_date": outcome.case_date,
+                "case_goal_id": outcome.case_goal_id,
+                "recommended_action": candidate.recommended_action,
+                "predicted_outcome_with": float(candidate.predicted_outcome_with),
+                "predicted_outcome_without": float(candidate.predicted_outcome_without),
+                "predicted_outcome_delta": float(
+                    outcome.guardrails.predicted_outcome_delta
+                ),
+                "conformance_deviation": (
+                    None
+                    if candidate.predicted_post_suggestion_fitness is None
+                    else 1.0 - float(candidate.predicted_post_suggestion_fitness)
+                ),
+                "llm_explanation_text": candidate.explanation,
+                "suggested_at": outcome.suggested_at,
+                "scheduler_version": outcome.scheduler_version,
+            }
+        except Exception as exc:  # noqa: BLE001 - RPC contract returns structured errors
+            return {
+                "ok": False,
+                "error": type(exc).__name__,
+                "detail": str(exc),
+            }
 
 
 # ---------------------------------------------------------------------- helpers
