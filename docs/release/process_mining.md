@@ -82,7 +82,7 @@ Process-mining engine integration covering the four canonical operations on XES-
 |---|---|---|
 | **Conformance does not yet rehydrate from Kuzu** — re-mines from the originating window, with `rehydration_fallback_used` flag when even that fails | non-blocking | T-PM-02 v2 follow-up |
 | **Kuzu projection is currently dead code at the operator level** — daemon doesn't invoke `rebuild_kuzu_projection` yet, and CLI is read-only by design. Persistence layer is "ready and waiting" | non-blocking | Wire into daemon nightly batch under T-INT-02 |
-| **`kuzu_projection` borrows `ProcessMiner._load_dataframe`** (private, with `# noqa: SLF001`) | non-blocking | Same T-PM-02 follow-up that exposes `PetriNetData` on `DiscoveredModel` |
+| ~~**`kuzu_projection` borrows `ProcessMiner._load_dataframe`** (private, with `# noqa: SLF001`)~~ | ~~non-blocking~~ | **RESOLVED** in Tier-A bundle (commit `09cca89`): `PetriNetData` now first-class on `DiscoveredModel` via new `tm/engines/petri_net.py` module; projection consumes `model.petri_net` directly, no re-mine, `# noqa: SLF001` removed. |
 | **Kuzu writer ownership is by convention only** — no cross-process locking | non-blocking | Safe for single-daemon v1 deployments; revisit if multiple writers ever land |
 | **Performance output for terminal activities reports `avg=n/a, count=0`** because sojourn time is credited to non-terminal events; visually surprising for short cases | informational | Algorithmically correct; document in operator-facing readme if confusion emerges |
 | **Empty-string `case_date` sentinel** (`''` default in migration 0006) | informational | Documented in `tm/repositories/events.py` module docstring; partial index on `case_date <> ''` keeps it from bloating queries |
@@ -99,7 +99,7 @@ Run `apply_pending_migrations()` to install **migration 0006** (XES columns: `ca
 
 ## Next-step pointers
 
-- **T-PM-02 follow-up:** surface `PetriNetData` on `DiscoveredModel` directly so `kuzu_projection` can skip the re-mine and drop the `SLF001` noqa.
+- ~~**T-PM-02 follow-up:** surface `PetriNetData` on `DiscoveredModel` directly~~ — **DONE** (Tier-A bundle, commit `09cca89`); `tm/engines/petri_net.py` is the new shared home.
 - **T-PM-02 v2 follow-up:** rehydrate conformance from `KuzuStore.get_petri_net` instead of re-mining from the originating window.
 - **T-INT-02 daemon wiring:** call `rebuild_kuzu_projection` from the daemon's nightly batch so the persistence layer becomes operationally live.
 - **T-INT-02 scheduler agent:** consume `ProcessMiner` outputs (variants + bottlenecks + conformance fitness) as scheduling signals.
