@@ -17,12 +17,11 @@ from tm.engines.prescriptive_monitoring import (
     CandidateSuggestion,
     ConformanceDeviationGuard,
     CounterfactualGuard,
-    GuardrailVerdict,
     Guardrails,
     GuardrailsEvaluation,
+    GuardrailVerdict,
     ObjectiveFunctionGuard,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -69,9 +68,7 @@ def test_guardrail_verdict_is_frozen() -> None:
 
 
 def test_guardrails_evaluation_is_frozen() -> None:
-    e = GuardrailsEvaluation(
-        accept=True, verdicts=(), predicted_outcome_delta=0.0
-    )
+    e = GuardrailsEvaluation(accept=True, verdicts=(), predicted_outcome_delta=0.0)
     with pytest.raises(FrozenInstanceError):
         e.accept = False  # type: ignore[misc]
 
@@ -182,9 +179,7 @@ def test_conformance_guard_custom_floor() -> None:
 
 def test_guardrails_aggregate_accept_when_all_pass() -> None:
     g = Guardrails()
-    evaluation = g.evaluate(
-        _candidate(with_score=1.5, without_score=1.0, fitness=0.7)
-    )
+    evaluation = g.evaluate(_candidate(with_score=1.5, without_score=1.0, fitness=0.7))
     assert evaluation.accept is True
     assert all(v.passed for v in evaluation.verdicts)
     assert len(evaluation.verdicts) == 3
@@ -194,9 +189,7 @@ def test_guardrails_aggregate_reject_when_any_fail() -> None:
     g = Guardrails()
     # Counterfactual delta below threshold -> objective passes, counterfactual
     # fails, conformance passes; aggregate must be reject.
-    evaluation = g.evaluate(
-        _candidate(with_score=1.1, without_score=1.0, fitness=0.7)
-    )
+    evaluation = g.evaluate(_candidate(with_score=1.1, without_score=1.0, fitness=0.7))
     assert evaluation.accept is False
     names_failed = {v.guard_name for v in evaluation.verdicts if not v.passed}
     assert names_failed == {"counterfactual"}
@@ -207,9 +200,7 @@ def test_guardrails_runs_all_guards_no_short_circuit() -> None:
     # Zero delta + low fitness: objective fails, counterfactual fails (delta
     # 0 < 0.3), conformance fails (fitness 0.1 < 0.4). All three verdicts
     # should be present and all should be failed.
-    evaluation = g.evaluate(
-        _candidate(with_score=1.0, without_score=1.0, fitness=0.1)
-    )
+    evaluation = g.evaluate(_candidate(with_score=1.0, without_score=1.0, fitness=0.1))
     assert evaluation.accept is False
     assert len(evaluation.verdicts) == 3
     failed_names = [v.guard_name for v in evaluation.verdicts if not v.passed]
@@ -225,9 +216,7 @@ def test_guardrails_runs_all_guards_no_short_circuit() -> None:
 
 def test_predicted_outcome_delta_in_evaluation() -> None:
     g = Guardrails()
-    evaluation = g.evaluate(
-        _candidate(with_score=1.7, without_score=0.9, fitness=0.8)
-    )
+    evaluation = g.evaluate(_candidate(with_score=1.7, without_score=0.9, fitness=0.8))
     # 1.7 - 0.9 = 0.8 (within float tolerance)
     assert evaluation.predicted_outcome_delta == pytest.approx(0.8)
 

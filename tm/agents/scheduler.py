@@ -4,7 +4,8 @@ T-INT-02 wires the LLM-driven proactive scheduler. The agent reads
 ProcessMiner / VariantClusterer / OutcomeAggregator state, asks an LLM for
 one recommended action, runs the candidate through three guardrails (see
 :mod:`tm.engines.prescriptive_monitoring`), and — if the candidate is
-accepted — logs a row to :class:`tm.repositories.telemetry.SuggestionTelemetryRepository`.
+accepted — logs a row to
+:class:`tm.repositories.telemetry.SuggestionTelemetryRepository`.
 
 Pipeline order::
 
@@ -54,8 +55,6 @@ from tm.agents.scheduler_errors import (
     SchedulerValidationError,
 )
 from tm.engines.prescriptive_monitoring import (
-    DEFAULT_CONFORMANCE_FITNESS_FLOOR,
-    DEFAULT_COUNTERFACTUAL_DELTA_THRESHOLD,
     CandidateSuggestion,
     Guardrails,
     GuardrailsEvaluation,
@@ -353,10 +352,15 @@ class SchedulerAgent:
         # ------------------------------------------------------------
         # 1. Rate-limit check.
         # ------------------------------------------------------------
-        existing_today = self._telemetry.list_recent(
-            since=f"{case_date}T00:00:00Z",
-            until=f"{case_date}T23:59:59Z",
-        )
+        # SuggestionTelemetryRepository has no count_for_case_date helper, and
+        # list_recent only filters by suggested_at — but we want suggestions
+        # logged FOR a given case_date irrespective of when they were
+        # generated. The case_date column lives on every row, so we read all
+        # recent rows and filter in Python. The window is bounded enough that
+        # this is cheap; a follow-up could add a dedicated repo method.
+        existing_today = [
+            r for r in self._telemetry.list_recent() if r.case_date == case_date
+        ]
         existing_count = len(existing_today)
         if existing_count >= self._max_per_day:
             return SchedulerSkipReason(
@@ -390,9 +394,7 @@ class SchedulerAgent:
         # The serialized payload bounds input tokens; we conservatively use
         # the system prompt + payload length as the input estimate.
         payload_text = _format_context_payload(context_payload)
-        est_input_tokens = max(
-            1, (len(self._system_prompt) + len(payload_text)) // 4
-        )
+        est_input_tokens = max(1, (len(self._system_prompt) + len(payload_text)) // 4)
         cost_estimated = estimate_cost_usd(
             model=self._model,
             input_tokens=est_input_tokens,
@@ -411,8 +413,7 @@ class SchedulerAgent:
         # closing tag in the payload to prevent wrapper escape.
         sanitized = _sanitize_user_message_wrapper(payload_text)
         user_content = (
-            f"{self._system_prompt}\n\n"
-            f"<user_message>\n{sanitized}\n</user_message>"
+            f"{self._system_prompt}\n\n<user_message>\n{sanitized}\n</user_message>"
         )
         response = self._llm.extract(
             messages=[Message(role="user", content=user_content)],
@@ -445,10 +446,7 @@ class SchedulerAgent:
             failed = [v.guard_name for v in evaluation.verdicts if not v.passed]
             return SchedulerSkipReason(
                 reason="rejected_by_guardrails",
-                detail=(
-                    "guardrail(s) rejected candidate: "
-                    + ", ".join(failed)
-                ),
+                detail=("guardrail(s) rejected candidate: " + ", ".join(failed)),
                 guardrails=evaluation,
             )
 
@@ -678,8 +676,12 @@ def _validate_candidate_response(response: Any) -> CandidateSuggestion:
             f"extract response must be a dict, got {type(response).__name__}"
         )
 
-    required = ("recommended_action", "predicted_outcome_with",
-                "predicted_outcome_without", "explanation")
+    required = (
+        "recommended_action",
+        "predicted_outcome_with",
+        "predicted_outcome_without",
+        "explanation",
+    )
     for key in required:
         if key not in response:
             raise SchedulerValidationError(

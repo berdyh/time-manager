@@ -233,8 +233,7 @@ class CounterfactualGuard:
                 guard_name=self.name,
                 passed=False,
                 rationale=(
-                    "predicted_outcome_delta is NaN "
-                    f"(threshold={self._threshold:.4f})"
+                    f"predicted_outcome_delta is NaN (threshold={self._threshold:.4f})"
                 ),
             )
         if delta >= self._threshold:
@@ -356,9 +355,7 @@ class Guardrails:
         self._counterfactual = CounterfactualGuard(
             threshold=counterfactual_delta_threshold
         )
-        self._conformance = ConformanceDeviationGuard(
-            floor=conformance_fitness_floor
-        )
+        self._conformance = ConformanceDeviationGuard(floor=conformance_fitness_floor)
 
     @property
     def counterfactual_delta_threshold(self) -> float:
