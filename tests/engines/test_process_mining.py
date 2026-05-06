@@ -667,3 +667,98 @@ def test_dataclasses_are_frozen() -> None:
     v = Variant(sequence=("A",), case_count=1, case_ids=("C1",))
     with pytest.raises(FrozenInstanceError):
         v.case_count = 2  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
+# debrief_summary filter (T-INT-01b)
+# ---------------------------------------------------------------------------
+
+
+def _seed_workday_log_with_summary(repo: EventsRepository) -> None:
+    """Three workdays each with A, B, C plus a synthetic debrief_summary event."""
+    plan = [
+        ("2026-01-01", ["A", "B", "C"]),
+        ("2026-01-02", ["A", "B", "C"]),
+        ("2026-01-03", ["A", "B", "C"]),
+    ]
+    eid = 0
+    for date, seq in plan:
+        for hour, activity in enumerate(seq, start=10):
+            eid += 1
+            repo.append_event(
+                event_id=f"FLT{eid:04d}",
+                case_id=f"FC{eid}",
+                activity=activity,
+                timestamp=f"{date}T{hour:02d}:00:00Z",
+                lifecycle="complete",
+                case_date=date,
+            )
+        # Synthetic summary event, same shape as DebriefAgent emits.
+        eid += 1
+        repo.append_event(
+            event_id=f"FLT{eid:04d}",
+            case_id=f"FC{eid}",
+            activity="debrief_summary",
+            timestamp=f"{date}T23:59:59Z",
+            lifecycle="complete",
+            case_date=date,
+        )
+
+
+def test_load_dataframe_filters_debrief_summary_by_default(tmp_path: Path) -> None:
+    """_load_dataframe must exclude debrief_summary events by default."""
+    repo = _make_repo(tmp_path)
+    _seed_workday_log_with_summary(repo)
+    miner = ProcessMiner(repo)
+
+    analysis = miner.analyze_variants(lens="workday")
+
+    # All sequences must not contain 'debrief_summary'.
+    for variant in analysis.variants:
+        assert "debrief_summary" not in variant.sequence, (
+            f"debrief_summary leaked into variant: {variant.sequence}"
+        )
+    # A, B, C is the only real sequence.
+    assert analysis.distinct_variants == 1
+    assert analysis.variants[0].sequence == ("A", "B", "C")
+
+
+def test_load_dataframe_includes_summary_when_opt_in(tmp_path: Path) -> None:
+    """Passing include_summary_events=True restores debrief_summary in the log."""
+    repo = _make_repo(tmp_path)
+    _seed_workday_log_with_summary(repo)
+    miner = ProcessMiner(repo)
+
+    analysis = miner.analyze_variants(lens="workday", include_summary_events=True)
+
+    sequences_flat = [act for v in analysis.variants for act in v.sequence]
+    assert "debrief_summary" in sequences_flat
+
+
+def test_analyze_variants_excludes_debrief_summary_by_default(tmp_path: Path) -> None:
+    """Sanity: default analyze_variants call excludes the synthetic summary."""
+    repo = _make_repo(tmp_path)
+    _seed_workday_log_with_summary(repo)
+    miner = ProcessMiner(repo)
+
+    analysis = miner.analyze_variants(lens="workday")
+
+    all_activities: set[str] = set()
+    for variant in analysis.variants:
+        all_activities.update(variant.sequence)
+    assert "debrief_summary" not in all_activities
+
+
+def test_discover_inductive_miner_excludes_debrief_summary_by_default(
+    tmp_path: Path,
+) -> None:
+    """discover_inductive_miner must not include debrief_summary in activity_count."""
+    repo = _make_repo(tmp_path)
+    _seed_workday_log_with_summary(repo)
+    miner = ProcessMiner(repo)
+
+    model = miner.discover_inductive_miner(lens="workday")
+
+    # 3 real activities (A, B, C); debrief_summary must not count.
+    assert model.activity_count == 3
+    assert "debrief_summary" not in model.process_tree_repr
