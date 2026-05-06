@@ -19,9 +19,9 @@ defined here or in :mod:`tm.engines.petri_net` so that downstream consumers
 (T-PM-03 Kuzu projection, T-PM-04 CLI display) can treat results as plain
 Python data.
 
-The conformance v1 design still re-runs discovery internally. Projection
-consumers use ``DiscoveredModel.petri_net`` directly, but conformance can
-rehydrate from Kuzu only once that replay path is wired.
+Conformance prefers ``DiscoveredModel.petri_net`` and rehydrates the pm4py
+net directly when present, falling back to re-mining the originating window
+only when the cached net is absent.
 
 PM4Py emits a tqdm progress bar by default; we silence the relevant warnings
 locally for a clean test run but do not muck with global state.
@@ -35,7 +35,11 @@ from typing import TYPE_CHECKING, Any, Literal
 import pm4py
 import pm4py.util.constants
 
-from tm.engines.petri_net import PetriNetData, petri_net_data_from_pm4py
+from tm.engines.petri_net import (
+    PetriNetData,
+    petri_net_data_from_pm4py,
+    petri_net_data_to_pm4py,
+)
 from tm.repositories.events import EventsRepository
 
 if TYPE_CHECKING:  # pragma: no cover - import guard for type checker only
@@ -249,12 +253,11 @@ class ProcessMiner:
     query, builds a DataFrame, calls PM4Py, and returns one of the public
     dataclasses.  No PM4Py types leak.
 
-    Notes on conformance (v1)
-    -------------------------
-    For v1 simplicity, :meth:`conformance_token_replay` re-discovers the
-    Petri net from the same log it then conforms against.  This is wasteful
-    but correct — once T-PM-03 lands, the discovered net will be persisted to
-    Kuzu and the conformance method can rehydrate from there.
+    Notes on conformance
+    --------------------
+    :meth:`conformance_token_replay` rehydrates the pm4py net from
+    ``DiscoveredModel.petri_net`` when present and only re-mines when that
+    cache is missing.  See :func:`tm.engines.petri_net.petri_net_data_to_pm4py`.
     """
 
     def __init__(self, events_repo: EventsRepository) -> None:
@@ -403,15 +406,12 @@ class ProcessMiner:
     ) -> ConformanceResult:
         """Run token-based replay over the lens window.
 
-        For v1 we do not persist the Petri net.  Instead we re-discover the
-        net from the *model's* original window (taken from
-        ``model.extractor_metadata``) and then replay against the
-        conformance call's window.  This preserves the spirit of "rehydrate
-        the cached model" without an actual cache, and lets callers detect
-        drift when they conform a wider window than they discovered from.
-
-        Once T-PM-03 lands (Kuzu projection), the rehydration step will
-        fetch the persisted net instead of re-mining.
+        When the supplied ``model`` carries a populated ``petri_net``,
+        rehydrate the pm4py ``(net, im, fm)`` triple from that cache and
+        replay directly.  Otherwise fall back to re-mining from the model's
+        originating window (``model.extractor_metadata``); if even that
+        window is empty, fall back further to the replay log so callers
+        get a deterministic result instead of a crash.
         """
         replay_df = self._load_dataframe(
             lens=lens,
@@ -435,24 +435,32 @@ class ProcessMiner:
                 extractor_metadata=metadata,
             )
 
-        # Rebuild the model from its originating window so the replay scores
-        # the *cached* model rather than a freshly mined one.
-        model_meta = model.extractor_metadata or {}
-        model_lens: CaseLens = model_meta.get("lens", lens)
-        model_df = self._load_dataframe(
-            lens=model_lens,
-            since=model_meta.get("since"),
-            until=model_meta.get("until"),
-            case_id=model_meta.get("case_id"),
-            include_summary_events=include_summary_events,
-        )
-        rehydration_fallback_used = model_df.empty
-        if rehydration_fallback_used:
-            # No model to rehydrate from — fall back to the replay log so we
-            # at least return a deterministic result instead of crashing.
-            model_df = replay_df
+        if model.petri_net is not None:
+            # Rehydrate net+markings from cached PetriNetData; skip the re-mine.
+            net, im, fm = petri_net_data_to_pm4py(model.petri_net)
+            rehydration_fallback_used = False
+            rehydration_source = "petri_net_data"
+        else:
+            # Fallback path: re-mine from the model's originating window.
+            model_meta = model.extractor_metadata or {}
+            model_lens: CaseLens = model_meta.get("lens", lens)
+            model_df = self._load_dataframe(
+                lens=model_lens,
+                since=model_meta.get("since"),
+                until=model_meta.get("until"),
+                case_id=model_meta.get("case_id"),
+                include_summary_events=include_summary_events,
+            )
+            rehydration_fallback_used = model_df.empty
+            if rehydration_fallback_used:
+                # No model to rehydrate from — fall back to the replay log so
+                # we at least return a deterministic result instead of crashing.
+                model_df = replay_df
+                rehydration_source = "replay_log_fallback"
+            else:
+                rehydration_source = "originating_window_remine"
+            net, im, fm = pm4py.discover_petri_net_inductive(model_df)
 
-        net, im, fm = pm4py.discover_petri_net_inductive(model_df)
         replayed = pm4py.conformance_diagnostics_token_based_replay(
             replay_df, net, im, fm
         )
@@ -480,6 +488,7 @@ class ProcessMiner:
         avg_produced = sum(produced) / len(produced) if produced else None
 
         metadata["rehydration_fallback_used"] = rehydration_fallback_used
+        metadata["rehydration_source"] = rehydration_source
         return ConformanceResult(
             trace_fitness_per_case=trace_fitness,
             aggregate_fitness=agg,

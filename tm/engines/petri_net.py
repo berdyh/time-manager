@@ -17,6 +17,7 @@ __all__ = [
     "PlaceData",
     "TransitionData",
     "petri_net_data_from_pm4py",
+    "petri_net_data_to_pm4py",
 ]
 
 
@@ -157,3 +158,53 @@ def petri_net_data_from_pm4py(
         final_marking=final,
         activities=activities,
     )
+
+
+def petri_net_data_to_pm4py(
+    data: PetriNetData,
+) -> tuple[Any, Any, Any]:
+    """Reconstruct a pm4py ``(PetriNet, initial_marking, final_marking)`` triple.
+
+    Inverse of :func:`petri_net_data_from_pm4py` — round-tripping should
+    preserve structure (place/transition/arc identity, marking weights).
+    Silent transitions (``is_invisible=True``) are recreated with PM4Py's
+    ``label=None`` convention so token-based replay treats them as taus.
+    """
+    from pm4py.objects.petri_net.obj import Marking, PetriNet
+    from pm4py.objects.petri_net.utils.petri_utils import add_arc_from_to
+
+    net = PetriNet()
+
+    places_by_name: dict[str, Any] = {}
+    for place in data.places:
+        p = PetriNet.Place(name=place.place_id)
+        net.places.add(p)
+        places_by_name[place.place_id] = p
+
+    transitions_by_name: dict[str, Any] = {}
+    for transition in data.transitions:
+        label: str | None = None if transition.is_invisible else transition.label
+        t = PetriNet.Transition(name=transition.transition_id, label=label)
+        net.transitions.add(t)
+        transitions_by_name[transition.transition_id] = t
+
+    for arc in data.arcs:
+        if arc.source_kind == "place":
+            source = places_by_name[arc.source_id]
+        else:
+            source = transitions_by_name[arc.source_id]
+        if arc.target_kind == "place":
+            target = places_by_name[arc.target_id]
+        else:
+            target = transitions_by_name[arc.target_id]
+        add_arc_from_to(source, target, net, weight=arc.weight)
+
+    initial_marking = Marking()
+    for place_name, count in data.initial_marking.place_tokens.items():
+        initial_marking[places_by_name[place_name]] = count
+
+    final_marking = Marking()
+    for place_name, count in data.final_marking.place_tokens.items():
+        final_marking[places_by_name[place_name]] = count
+
+    return net, initial_marking, final_marking

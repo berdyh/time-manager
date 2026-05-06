@@ -297,19 +297,28 @@ def test_conformance_empty_log_returns_zeroed_result(tmp_path: Path) -> None:
 
 
 def test_conformance_rehydration_fallback_flagged(tmp_path: Path) -> None:
-    """When model window events are redacted, fallback flag must be True."""
+    """When model window events are redacted, fallback flag must be True.
+
+    Exercises the legacy re-mine path by stripping the cached ``petri_net``
+    from the discovered model so conformance must re-load from the
+    originating window — which is then redacted to force the deeper
+    replay-log fallback.
+    """
     import sqlite3
+    from dataclasses import replace
 
     repo = _make_repo(tmp_path)
     _seed_workday_log(repo)
     miner = ProcessMiner(repo)
 
-    # Discover from a narrow window (only 2026-01-01).
+    # Discover from a narrow window (only 2026-01-01), then drop the cached
+    # net so conformance falls through to the re-mine path.
     model = miner.discover_inductive_miner(
         lens="workday",
         since="2026-01-01T00:00:00Z",
         until="2026-01-02T00:00:00Z",
     )
+    model = replace(model, petri_net=None)
 
     # Redact all events that fall inside the model's originating window by
     # deleting them directly from the database (simulates GC / redaction).
@@ -768,3 +777,88 @@ def test_discover_inductive_miner_excludes_debrief_summary_by_default(
     # 3 real activities (A, B, C); debrief_summary must not count.
     assert model.activity_count == 3
     assert "debrief_summary" not in model.process_tree_repr
+
+
+# ---------------------------------------------------------------------------
+# Conformance rehydration source (T-PM-02-v2)
+# ---------------------------------------------------------------------------
+
+
+def test_conformance_uses_petri_net_data_when_present(tmp_path: Path) -> None:
+    """Discovery populates ``model.petri_net``; conformance should use it."""
+    repo = _make_repo(tmp_path)
+    _seed_workday_log(repo)
+    miner = ProcessMiner(repo)
+
+    model = miner.discover_inductive_miner(lens="workday")
+    assert model.petri_net is not None  # precondition
+
+    result = miner.conformance_token_replay(model, lens="workday")
+
+    assert result.extractor_metadata["rehydration_source"] == "petri_net_data"
+    assert result.extractor_metadata["rehydration_fallback_used"] is False
+    assert result.aggregate_fitness > 0.0
+
+
+def test_conformance_falls_back_to_remine_when_petri_net_absent(
+    tmp_path: Path,
+) -> None:
+    """A model with ``petri_net=None`` must trigger the originating-window re-mine."""
+    from dataclasses import replace
+
+    repo = _make_repo(tmp_path)
+    _seed_workday_log(repo)
+    miner = ProcessMiner(repo)
+
+    cached_model = miner.discover_inductive_miner(lens="workday")
+    cached_result = miner.conformance_token_replay(cached_model, lens="workday")
+
+    # Strip the cached net to force the legacy re-mine path.
+    stub_model = replace(cached_model, petri_net=None)
+    remined_result = miner.conformance_token_replay(stub_model, lens="workday")
+
+    assert (
+        remined_result.extractor_metadata["rehydration_source"]
+        == "originating_window_remine"
+    )
+    assert remined_result.extractor_metadata["rehydration_fallback_used"] is False
+    # Both paths should yield identical fitness on the same log (deterministic).
+    assert remined_result.aggregate_fitness == pytest.approx(
+        cached_result.aggregate_fitness
+    )
+
+
+def test_conformance_replay_log_fallback_when_originating_window_empty(
+    tmp_path: Path,
+) -> None:
+    """When the model's originating window has no events, fall back to replay log."""
+    import sqlite3
+    from dataclasses import replace
+
+    repo = _make_repo(tmp_path)
+    _seed_workday_log(repo)
+    miner = ProcessMiner(repo)
+
+    # Discover from a narrow window covering only 2026-01-01.
+    model = miner.discover_inductive_miner(
+        lens="workday",
+        since="2026-01-01T00:00:00Z",
+        until="2026-01-02T00:00:00Z",
+    )
+    # Drop the cached net so conformance follows the legacy re-mine path.
+    model = replace(model, petri_net=None)
+
+    # Redact the originating window's events.
+    db_path = tmp_path / "tm.db"
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute(
+            "DELETE FROM events WHERE timestamp >= '2026-01-01T00:00:00Z'"
+            " AND timestamp < '2026-01-02T00:00:00Z'"
+        )
+        conn.commit()
+
+    # Replay window covers days 2 and 3 (still present in the DB).
+    result = miner.conformance_token_replay(model, lens="workday")
+
+    assert result.extractor_metadata["rehydration_source"] == "replay_log_fallback"
+    assert result.extractor_metadata["rehydration_fallback_used"] is True
