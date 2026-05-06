@@ -183,8 +183,9 @@ class VocabAligner:
         Used both for the fast resolve path and to enumerate active
         canonicals when assembling the LLM prompt and validating output.
     llm:
-        Any :class:`tm.llm.client.LLMClient` implementation.  Tests pass a
-        ``unittest.mock.Mock``; production wires in
+        Optional :class:`tm.llm.client.LLMClient` implementation.  Drift and
+        novelty checks do not need it.  Tests pass a ``unittest.mock.Mock``;
+        production wires in
         :class:`tm.llm.anthropic_adapter.AnthropicAdapter`.
     model:
         Reserved for future use (e.g. to thread a model id through to the
@@ -204,7 +205,7 @@ class VocabAligner:
     def __init__(
         self,
         vocab_repo: VocabularyRepository,
-        llm: LLMClient,
+        llm: LLMClient | None = None,
         *,
         model: str | None = None,
     ) -> None:
@@ -254,6 +255,8 @@ class VocabAligner:
         # 2. Slow path: ask the LLM.
         active_names = {e.activity_name for e in self._vocab_repo.list_active()}
         prompt = self._build_user_prompt(normalized, sorted(active_names))
+        if self._llm is None:
+            raise AlignmentError("LLM client is required for novel label alignment")
         response = self._llm.extract(
             messages=[Message(role="user", content=prompt)],
             schema=ALIGNMENT_SCHEMA,
@@ -285,7 +288,7 @@ class VocabAligner:
 
     def compute_novelty_rate(
         self,
-        since: str,
+        since: str | None = None,
         until: str | None = None,
     ) -> float:
         """Fraction of events in ``[since, until)`` outside the active vocab.
@@ -293,7 +296,8 @@ class VocabAligner:
         Parameters
         ----------
         since:
-            ISO 8601 lower bound (inclusive).
+            ISO 8601 lower bound (inclusive).  ``None`` removes the lower
+            bound (events are read from the beginning of the log).
         until:
             ISO 8601 upper bound (exclusive).  ``None`` removes the upper
             bound (events are read up to "now").
@@ -313,11 +317,17 @@ class VocabAligner:
         """
         active_names = {e.activity_name for e in self._vocab_repo.list_active()}
 
-        sql = "SELECT activity FROM events WHERE timestamp >= ?"
-        params: list[Any] = [since]
+        sql = "SELECT activity FROM events"
+        clauses: list[str] = []
+        params: list[Any] = []
+        if since is not None:
+            clauses.append("timestamp >= ?")
+            params.append(since)
         if until is not None:
-            sql += " AND timestamp < ?"
+            clauses.append("timestamp < ?")
             params.append(until)
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
 
         conn = sqlite3.connect(self._db_path)
         try:
@@ -333,7 +343,7 @@ class VocabAligner:
 
     def find_drifted_activities(
         self,
-        idle_days: int = 30,
+        idle_days: int = 14,
         *,
         as_of: str | None = None,
     ) -> list[str]:
@@ -342,7 +352,7 @@ class VocabAligner:
         Parameters
         ----------
         idle_days:
-            Threshold in days. Default 30.
+            Threshold in days. Default 14.
         as_of:
             ISO 8601 anchor timestamp (defaults to now-UTC).  An activity
             counts as "drifted" if it has no events with

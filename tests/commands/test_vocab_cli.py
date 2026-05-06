@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import sqlite3
 import uuid
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from typer.testing import CliRunner
@@ -68,6 +69,12 @@ def _insert_event(
         conn.close()
 
 
+def _days_ago(days: int) -> str:
+    """Return a UTC event timestamp ``days`` days before now."""
+    dt = datetime.now(UTC).replace(microsecond=0) - timedelta(days=days)
+    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def _invoke_review(*args: str, db_path: Path, input: str | None = None) -> object:
     invoke_args = ["vocab", "review", "--db-path", str(db_path), *args]
     return runner.invoke(app, invoke_args, input=input)
@@ -75,6 +82,11 @@ def _invoke_review(*args: str, db_path: Path, input: str | None = None) -> objec
 
 def _invoke_list(*args: str, db_path: Path) -> object:
     invoke_args = ["vocab", "list", "--db-path", str(db_path), *args]
+    return runner.invoke(app, invoke_args)
+
+
+def _invoke_drift(*args: str, db_path: Path) -> object:
+    invoke_args = ["vocab", "drift", "--db-path", str(db_path), *args]
     return runner.invoke(app, invoke_args)
 
 
@@ -331,3 +343,96 @@ def test_vocab_list_auto_seeds_empty_database(tmp_path: Path) -> None:
 
     repo = VocabularyRepository(db_path)
     assert repo.resolve("workout") == "exercise"
+
+
+# ---------------------------------------------------------------------------
+# vocab drift
+# ---------------------------------------------------------------------------
+
+
+def test_drift_command_with_drifted_activities(tmp_path: Path) -> None:
+    db_path = _db(tmp_path)
+    repo = VocabularyRepository(db_path)
+    for activity in ("active_now", "bug_triage", "deep_work", "planning_meeting"):
+        repo.add_canonical(activity)
+
+    bug_ts = _days_ago(21)
+    deep_ts = _days_ago(30)
+    _insert_event(db_path, "active_now", ts=_days_ago(2))
+    _insert_event(db_path, "bug_triage", ts=bug_ts)
+    _insert_event(db_path, "deep_work", ts=deep_ts)
+
+    result = _invoke_drift(db_path=db_path)
+
+    assert result.exit_code == 0, result.output
+    assert "Vocabulary drift report" in result.output
+    assert "Idle window: 14 days" in result.output
+    assert "active_now" not in result.output
+    assert "bug_triage" in result.output
+    assert f"last seen: {bug_ts[:10]}" in result.output
+    assert "deep_work" in result.output
+    assert f"last seen: {deep_ts[:10]}" in result.output
+    assert "planning_meeting" in result.output
+    assert "last seen: never" in result.output
+    assert "Novelty rate over [all..now]: 0.000" in result.output
+
+
+def test_drift_command_no_drift(tmp_path: Path) -> None:
+    db_path = _db(tmp_path)
+    repo = VocabularyRepository(db_path)
+    for activity in ("deep_work", "meeting"):
+        repo.add_canonical(activity)
+        _insert_event(db_path, activity, ts=_days_ago(2))
+
+    result = _invoke_drift(db_path=db_path)
+
+    assert result.exit_code == 0, result.output
+    assert result.output.strip() == (
+        "Vocabulary drift report: clean (no drift, novelty rate 0.000)"
+    )
+
+
+def test_drift_command_empty_db(tmp_path: Path) -> None:
+    db_path = _db(tmp_path)
+
+    result = _invoke_drift(db_path=db_path)
+
+    assert result.exit_code == 0, result.output
+    assert result.output.strip() == (
+        "Vocabulary drift report: clean (no drift, novelty rate 0.000)"
+    )
+
+
+def test_drift_command_idle_days_param(tmp_path: Path) -> None:
+    db_path = _db(tmp_path)
+    repo = VocabularyRepository(db_path)
+    for activity in ("focus_block", "planning"):
+        repo.add_canonical(activity)
+
+    _insert_event(db_path, "focus_block", ts=_days_ago(10))
+    _insert_event(db_path, "planning", ts=_days_ago(2))
+
+    default_result = _invoke_drift(db_path=db_path)
+    short_window_result = _invoke_drift("--idle-days", "7", db_path=db_path)
+
+    assert default_result.exit_code == 0, default_result.output
+    assert default_result.output.strip() == (
+        "Vocabulary drift report: clean (no drift, novelty rate 0.000)"
+    )
+    assert short_window_result.exit_code == 0, short_window_result.output
+    assert "Idle window: 7 days" in short_window_result.output
+    assert "focus_block" in short_window_result.output
+    assert "planning" not in short_window_result.output
+
+
+def test_drift_command_no_llm_key(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("TM_LLM_API_KEY", raising=False)
+    db_path = _db(tmp_path)
+    repo = VocabularyRepository(db_path)
+    repo.add_canonical("deep_work")
+    _insert_event(db_path, "deep_work", ts=_days_ago(1))
+
+    result = _invoke_drift(db_path=db_path)
+
+    assert result.exit_code == 0, result.output
+    assert "clean" in result.output

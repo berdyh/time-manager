@@ -15,15 +15,17 @@ canonical nor an alias).  LLM alignment can be layered on in a future task.
 from __future__ import annotations
 
 import sqlite3
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Annotated
 
 import typer
 
 from tm._paths import default_db_path
+from tm.repositories.events import EventsRepository
 from tm.repositories.vocabulary import VocabularyRepository
 from tm.stores.sqlite_store import SQLiteStore
+from tm.vocab_alignment import VocabAligner
 
 vocab_app = typer.Typer(
     help="Vocabulary governance — review novel labels, list canonical activities."
@@ -92,6 +94,50 @@ def _load_novel_labels(
         if len(novel) >= limit:
             break
     return novel
+
+
+def _parse_date_option(value: str | None, option_name: str) -> date | None:
+    """Parse a CLI date option that must be exactly YYYY-MM-DD."""
+    if value is None:
+        return None
+    try:
+        parsed = datetime.strptime(value, "%Y-%m-%d").date()
+    except ValueError:
+        typer.echo(
+            f"error: invalid {option_name}: {value!r} (expected YYYY-MM-DD)",
+            err=True,
+        )
+        raise typer.Exit(1) from None
+    if parsed.strftime("%Y-%m-%d") != value:
+        typer.echo(
+            f"error: invalid {option_name}: {value!r} (expected YYYY-MM-DD)",
+            err=True,
+        )
+        raise typer.Exit(1)
+    return parsed
+
+
+def _date_start_utc(value: date) -> str:
+    """Return midnight UTC for a date in the repository timestamp format."""
+    return f"{value.isoformat()}T00:00:00Z"
+
+
+def _last_seen_dates(
+    events_repo: EventsRepository,
+    activities: list[str],
+) -> dict[str, str]:
+    """Return YYYY-MM-DD last-seen dates for activity names, or ``never``."""
+    last_seen: dict[str, str] = {}
+    for activity in activities:
+        events = events_repo.query_events(activity=activity)
+        timestamps = [
+            str(event["timestamp"]) for event in events if event.get("timestamp")
+        ]
+        if not timestamps:
+            last_seen[activity] = "never"
+            continue
+        last_seen[activity] = max(timestamps)[:10]
+    return last_seen
 
 
 # ---------------------------------------------------------------------------
@@ -245,6 +291,88 @@ def review(
         f"{canonicals_created} canonicals created, "
         f"{skipped} skipped, "
         f"{remaining} remaining unprocessed"
+    )
+
+
+# ---------------------------------------------------------------------------
+# drift
+# ---------------------------------------------------------------------------
+
+
+@vocab_app.command()
+def drift(
+    db_path: _DbPathOption = None,  # type: ignore[assignment]
+    idle_days: Annotated[
+        int,
+        typer.Option(
+            "--idle-days",
+            min=0,
+            help="Number of idle days before an active canonical is drifted.",
+        ),
+    ] = 14,
+    since: Annotated[
+        str | None,
+        typer.Option(
+            "--since",
+            help="YYYY-MM-DD lower bound for novelty-rate events.",
+        ),
+    ] = None,
+    until: Annotated[
+        str | None,
+        typer.Option(
+            "--until",
+            help="YYYY-MM-DD inclusive upper bound for novelty-rate events.",
+        ),
+    ] = None,
+) -> None:
+    """Report inactive canonical vocabulary entries and novel-label rate."""
+    if db_path is None:
+        db_path = default_db_path()
+
+    since_date = _parse_date_option(since, "--since")
+    until_date = _parse_date_option(until, "--until")
+    since_ts = _date_start_utc(since_date) if since_date is not None else None
+    until_ts = (
+        _date_start_utc(until_date + timedelta(days=1))
+        if until_date is not None
+        else None
+    )
+
+    _ensure_migrations(db_path)
+    vocab_repo = VocabularyRepository(db_path)
+    events_repo = EventsRepository(db_path)
+    aligner = VocabAligner(vocab_repo)
+
+    drifted = sorted(aligner.find_drifted_activities(idle_days=idle_days))
+    novelty_rate = aligner.compute_novelty_rate(since=since_ts, until=until_ts)
+    total_events = len(events_repo.query_events(since=since_ts, until=until_ts))
+    novel_events = round(novelty_rate * total_events)
+
+    if not drifted and novelty_rate == 0.0:
+        typer.echo("Vocabulary drift report: clean (no drift, novelty rate 0.000)")
+        return
+
+    typer.echo("Vocabulary drift report")
+    typer.echo("=======================")
+    typer.echo(f"Idle window: {idle_days} days")
+    typer.echo("Drifted canonicals (no events in window):")
+
+    if drifted:
+        last_seen = _last_seen_dates(events_repo, drifted)
+        name_width = max(len(name) for name in drifted)
+        for activity in drifted:
+            typer.echo(
+                f"  - {activity:<{name_width}} (last seen: {last_seen[activity]})"
+            )
+    else:
+        typer.echo("  (none)")
+
+    since_label = since if since is not None else "all"
+    until_label = until if until is not None else "now"
+    typer.echo(
+        f"Novelty rate over [{since_label}..{until_label}]: "
+        f"{novelty_rate:.3f}  "
+        f"({novel_events} / {total_events} events used novel labels)"
     )
 
 
