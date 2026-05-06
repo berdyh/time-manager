@@ -8,6 +8,17 @@ aggregates suggestion telemetry against actual outcomes.  Other engines
 are imported on demand.
 """
 
+from tm.engines.prescriptive_monitoring import (
+    DEFAULT_CONFORMANCE_FITNESS_FLOOR,
+    DEFAULT_COUNTERFACTUAL_DELTA_THRESHOLD,
+    CandidateSuggestion,
+    ConformanceDeviationGuard,
+    CounterfactualGuard,
+    GuardrailVerdict,
+    Guardrails,
+    GuardrailsEvaluation,
+    ObjectiveFunctionGuard,
+)
 from tm.engines.process_mining import (
     ConformanceResult,
     DiscoveredModel,
@@ -33,12 +44,21 @@ from tm.engines.variant_cluster import (
 
 __all__ = [
     "BAD_DAY_THRESHOLD",
+    "DEFAULT_CONFORMANCE_FITNESS_FLOOR",
+    "DEFAULT_COUNTERFACTUAL_DELTA_THRESHOLD",
     "EFFECTIVE_OUTCOME_THRESHOLD",
     "EFFECTIVE_THROUGHPUT_MAX",
     "GOOD_DAY_THRESHOLD",
+    "CandidateSuggestion",
+    "ConformanceDeviationGuard",
     "ConformanceResult",
+    "CounterfactualGuard",
     "DiscoveredModel",
+    "GuardrailVerdict",
+    "Guardrails",
+    "GuardrailsEvaluation",
     "LabeledVariant",
+    "ObjectiveFunctionGuard",
     "PerformanceAnalysis",
     "PerformanceMetric",
     "ProcessMiner",
