@@ -327,6 +327,12 @@ class DebriefAgent:
             goal.
         DebriefTimestampError
             If an event's timestamp is not parseable as ISO 8601.
+
+        Partial persistence: this method is best-effort, not transactional.
+            If a per-event validation or goal-lookup failure raises mid-loop,
+            events processed BEFORE the failure are already persisted in the
+            events table. Callers SHOULD reconcile (e.g. delete the case_date
+            and re-run) if strict atomicity is required.
         """
         if not transcript or not transcript.strip():
             raise ValueError("transcript must be non-empty")
@@ -371,8 +377,16 @@ class DebriefAgent:
         # prepending the system prompt to the user message and wrapping
         # the transcript in <user_message> tags so the model treats it
         # as data per SYSTEM_PROMPT instructions.
+
+        # Defense against transcript content closing the wrapper prematurely.
+        # A transcript containing literal '</user_message>' would otherwise
+        # break out of the data-only context. HTML-escape the closing tag to
+        # neutralize. Case-sensitive: only the exact lowercase form is escaped;
+        # mixed-case variants (e.g. '</USER_MESSAGE>') are unlikely to escape
+        # the wrapper and we prefer not to mangle legitimate code samples.
+        sanitized = transcript.replace("</user_message>", "&lt;/user_message&gt;")
         user_content = (
-            f"{self._system_prompt}\n\n<user_message>\n{transcript}\n</user_message>"
+            f"{self._system_prompt}\n\n<user_message>\n{sanitized}\n</user_message>"
         )
         response = self._llm.extract(
             messages=[Message(role="user", content=user_content)],
