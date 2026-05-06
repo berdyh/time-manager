@@ -177,21 +177,30 @@ def review(
             elif choice == "m":
                 # Merge: prompt for canonical name, validate, add alias
                 active_names = {e.activity_name for e in vocab_repo.list_active()}
+                merge_cancelled = False
                 while True:
                     canonical_name = (
                         typer.prompt(
                             f"  merge '{label}' into canonical (one of: "
-                            f"{', '.join(sorted(active_names)[:5])}...)"
+                            f"{', '.join(sorted(active_names)[:5])}...)",
+                            default="",
+                            show_default=False,
                         )
                         .strip()
                         .lower()
                     )
+                    if canonical_name == "":
+                        typer.echo("  merge cancelled")
+                        merge_cancelled = True
+                        break
                     if canonical_name in active_names:
                         break
                     typer.echo(
                         f"  '{canonical_name}' is not a known canonical. "
                         "Please enter a valid canonical name."
                     )
+                if merge_cancelled:
+                    continue
                 vocab_repo.add_alias(label, canonical_name)
                 typer.echo(f"added alias `{label}` → `{canonical_name}`")
                 aliases_added += 1
@@ -218,6 +227,7 @@ def review(
                     canonicals_created += 1
                 except ValueError as exc:
                     typer.echo(f"  error: {exc}")
+                    skipped += 1
                 break
 
             elif choice == "i":
@@ -260,6 +270,10 @@ def list_vocab(
 
     _ensure_migrations(db_path)
     vocab_repo = VocabularyRepository(db_path)
+
+    if not vocab_repo.list_all():
+        vocab_repo.seed_starter_vocabulary()
+        vocab_repo.seed_starter_aliases()
 
     if include_archived:
         entries = vocab_repo.list_all()

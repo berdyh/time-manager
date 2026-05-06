@@ -126,7 +126,7 @@ def test_review_limit_respected(tmp_path: Path) -> None:
     result = _invoke_review("--limit", "2", db_path=db_path, input="i\ni\n")
     assert result.exit_code == 0, result.output
     # Summary should show at most 2 processed
-    assert "2 skipped" in result.output or "summary:" in result.output
+    assert "2 skipped" in result.output
 
 
 # ---------------------------------------------------------------------------
@@ -283,3 +283,51 @@ def test_vocab_list_include_archived_shows_archived(tmp_path: Path) -> None:
     assert result_archived.exit_code == 0, result_archived.output
     assert "sleep" in result_archived.output
     assert "archived" in result_archived.output
+
+
+# ---------------------------------------------------------------------------
+# review: merge abort and create-failure accountability
+# ---------------------------------------------------------------------------
+
+
+def test_review_merge_empty_canonical_returns_to_menu(tmp_path: Path) -> None:
+    db_path, repo = _seeded_db(tmp_path)
+    _insert_event(db_path, "gym_session")
+
+    result = _invoke_review(db_path=db_path, input="m\n\ni\n")
+
+    assert result.exit_code == 0, result.output
+    assert "merge cancelled" in result.output
+    assert "1 skipped" in result.output
+    assert repo.resolve("gym_session") is None
+
+
+def test_review_create_canonical_failure_counts_as_skipped(tmp_path: Path) -> None:
+    db_path, repo = _seeded_db(tmp_path)
+    _insert_event(db_path, "deep work")
+
+    result = _invoke_review(db_path=db_path, input="c\n\n")
+
+    assert result.exit_code == 0, result.output
+    assert "activity already exists: deep_work" in result.output
+    assert "1 skipped" in result.output
+    assert repo.resolve("deep work") is None
+
+
+# ---------------------------------------------------------------------------
+# vocab list: auto-seeds empty databases
+# ---------------------------------------------------------------------------
+
+
+def test_vocab_list_auto_seeds_empty_database(tmp_path: Path) -> None:
+    db_path = _db(tmp_path)
+
+    result = _invoke_list(db_path=db_path)
+
+    assert result.exit_code == 0, result.output
+    assert "no vocabulary entries" not in result.output
+    assert "deep_work" in result.output
+    assert "interruption" in result.output
+
+    repo = VocabularyRepository(db_path)
+    assert repo.resolve("workout") == "exercise"
