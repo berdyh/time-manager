@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import os
-from datetime import UTC, datetime
-from pathlib import Path
 from typing import Annotated
 
 import typer
@@ -14,6 +11,12 @@ from tm.agents.scheduler import (
     ScheduledSuggestion,
     SchedulerAgent,
     SchedulerSkipReason,
+)
+from tm.commands._shared import (
+    DbPathOption,
+    ensure_migrations,
+    require_api_key,
+    utc_today,
 )
 from tm.engines.process_mining import ProcessMiner
 from tm.engines.variant_cluster import VariantClusterer
@@ -27,43 +30,10 @@ from tm.models.outcome import OutcomeAggregator
 from tm.repositories.events import EventsRepository
 from tm.repositories.goals import GoalsRepository
 from tm.repositories.telemetry import SuggestionTelemetryRepository
-from tm.stores.sqlite_store import SQLiteStore
 
 suggest_app = typer.Typer(help="Generate one proactive scheduler suggestion.")
 
 DEFAULT_SUGGEST_COST_CAP_USD = 0.25
-_API_KEY_ENV = "TM_LLM_API_KEY"
-
-_DbPathOption = Annotated[
-    Path | None,
-    typer.Option(
-        "--db-path",
-        envvar="TM_DB",
-        help="Path to the tm SQLite database.",
-        show_default=False,
-    ),
-]
-
-
-def _ensure_migrations(db_path: Path) -> None:
-    store = SQLiteStore(db_path)
-    try:
-        store.apply_pending_migrations()
-    finally:
-        store.close()
-
-
-def _utc_today() -> str:
-    return datetime.now(UTC).strftime("%Y-%m-%d")
-
-
-def _require_api_key(command_name: str) -> None:
-    if not os.environ.get(_API_KEY_ENV):
-        typer.echo(
-            f"error: {_API_KEY_ENV} is not set; set it before running {command_name}.",
-            err=True,
-        )
-        raise typer.Exit(1)
 
 
 def _format_optional_float(value: float | None) -> str:
@@ -100,7 +70,7 @@ def _render_skip(result: SchedulerSkipReason) -> None:
 
 @suggest_app.callback(invoke_without_command=True)
 def suggest(
-    db_path: _DbPathOption = None,
+    db_path: DbPathOption = None,
     case_date: Annotated[
         str | None,
         typer.Option(
@@ -116,9 +86,15 @@ def suggest(
         str,
         typer.Option("--model", help="Anthropic model name."),
     ] = DEFAULT_MODEL,
-    cost_cap_usd: Annotated[
+    monthly_cap_usd: Annotated[
         float,
-        typer.Option("--cost-cap-usd", help="Cost cap in USD for this run."),
+        typer.Option(
+            "--monthly-cap-usd",
+            help=(
+                "Monthly cost cap in USD. The command refuses to run if "
+                "cumulative monthly spend would exceed this."
+            ),
+        ),
     ] = DEFAULT_SUGGEST_COST_CAP_USD,
     max_per_day: Annotated[
         int | None,
@@ -126,12 +102,12 @@ def suggest(
     ] = None,
 ) -> None:
     """Generate and persist one scheduler suggestion, or explain the skip."""
-    _require_api_key("tm suggest")
+    require_api_key("tm suggest")
 
     resolved_db_path = db_path or default_db_path()
-    resolved_case_date = case_date or _utc_today()
+    resolved_case_date = case_date or utc_today()
 
-    _ensure_migrations(resolved_db_path)
+    ensure_migrations(resolved_db_path)
     llm = AnthropicAdapter(model=model, max_tokens=DEFAULT_MAX_TOKENS)
     events_repo = EventsRepository(resolved_db_path)
     goals_repo = GoalsRepository(resolved_db_path)
@@ -139,7 +115,7 @@ def suggest(
     process_miner = ProcessMiner(events_repo)
     variant_clusterer = VariantClusterer(events_repo, outcome_aggregator)
     telemetry_repo = SuggestionTelemetryRepository(resolved_db_path)
-    cost_meter = CostMeter(resolved_db_path, monthly_cap_usd=cost_cap_usd)
+    cost_meter = CostMeter(resolved_db_path, monthly_cap_usd=monthly_cap_usd)
 
     agent = SchedulerAgent(
         llm_client=llm,

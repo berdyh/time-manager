@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import os
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
 
@@ -11,6 +9,12 @@ import typer
 
 from tm._paths import default_db_path
 from tm.agents.debrief import DebriefAgent, DebriefResult
+from tm.commands._shared import (
+    DbPathOption,
+    ensure_migrations,
+    require_api_key,
+    utc_today,
+)
 from tm.llm.anthropic_adapter import (
     DEFAULT_MAX_TOKENS,
     DEFAULT_MODEL,
@@ -20,44 +24,11 @@ from tm.llm.cost_meter import CostMeter
 from tm.repositories.events import EventsRepository
 from tm.repositories.goals import GoalsRepository
 from tm.repositories.vocabulary import VocabularyRepository
-from tm.stores.sqlite_store import SQLiteStore
 from tm.vocab_alignment import VocabAligner
 
 debrief_app = typer.Typer(help="Run LLM debrief extraction from a transcript.")
 
 DEFAULT_DEBRIEF_COST_CAP_USD = 0.50
-_API_KEY_ENV = "TM_LLM_API_KEY"
-
-_DbPathOption = Annotated[
-    Path | None,
-    typer.Option(
-        "--db-path",
-        envvar="TM_DB",
-        help="Path to the tm SQLite database.",
-        show_default=False,
-    ),
-]
-
-
-def _ensure_migrations(db_path: Path) -> None:
-    store = SQLiteStore(db_path)
-    try:
-        store.apply_pending_migrations()
-    finally:
-        store.close()
-
-
-def _utc_today() -> str:
-    return datetime.now(UTC).strftime("%Y-%m-%d")
-
-
-def _require_api_key(command_name: str) -> None:
-    if not os.environ.get(_API_KEY_ENV):
-        typer.echo(
-            f"error: {_API_KEY_ENV} is not set; set it before running {command_name}.",
-            err=True,
-        )
-        raise typer.Exit(1)
 
 
 def _read_transcript(
@@ -118,7 +89,7 @@ def _render_result(result: DebriefResult) -> None:
 
 @debrief_app.callback(invoke_without_command=True)
 def debrief(
-    db_path: _DbPathOption = None,
+    db_path: DbPathOption = None,
     case_date: Annotated[
         str | None,
         typer.Option(
@@ -142,9 +113,15 @@ def debrief(
         int,
         typer.Option("--max-tokens", help="Maximum output tokens for extraction."),
     ] = DEFAULT_MAX_TOKENS,
-    cost_cap_usd: Annotated[
+    monthly_cap_usd: Annotated[
         float,
-        typer.Option("--cost-cap-usd", help="Cost cap in USD for this run."),
+        typer.Option(
+            "--monthly-cap-usd",
+            help=(
+                "Monthly cost cap in USD. The command refuses to run if "
+                "cumulative monthly spend would exceed this."
+            ),
+        ),
     ] = DEFAULT_DEBRIEF_COST_CAP_USD,
 ) -> None:
     """Extract structured events from a transcript and persist them."""
@@ -152,12 +129,12 @@ def debrief(
         transcript_file=transcript_file,
         from_stdin=from_stdin,
     )
-    _require_api_key("tm debrief")
+    require_api_key("tm debrief")
 
     resolved_db_path = db_path or default_db_path()
-    resolved_case_date = case_date or _utc_today()
+    resolved_case_date = case_date or utc_today()
 
-    _ensure_migrations(resolved_db_path)
+    ensure_migrations(resolved_db_path)
     llm = AnthropicAdapter(model=model, max_tokens=max_tokens)
     vocab_repo = VocabularyRepository(resolved_db_path)
     agent = DebriefAgent(
@@ -165,7 +142,7 @@ def debrief(
         vocab_aligner=VocabAligner(vocab_repo, llm),
         goals_repo=GoalsRepository(resolved_db_path),
         events_repo=EventsRepository(resolved_db_path),
-        cost_meter=CostMeter(resolved_db_path, monthly_cap_usd=cost_cap_usd),
+        cost_meter=CostMeter(resolved_db_path, monthly_cap_usd=monthly_cap_usd),
         model=model,
         max_tokens=max_tokens,
     )
