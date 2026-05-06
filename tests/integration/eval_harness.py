@@ -150,8 +150,8 @@ def load_fixtures(
     expected_dict)`` triples.  Pairs whose expected JSON is unreadable are
     silently skipped — the harness logs nothing because we want
     ``run_eval`` to remain pure.  Fixtures whose transcript file exists but
-    expected file does NOT are also skipped (``test_eval_handles_missing_fixture_gracefully``
-    exercises this).
+    expected file does NOT are also skipped (the
+    ``test_eval_handles_missing_fixture_gracefully`` test exercises this).
 
     Parameters
     ----------
@@ -259,11 +259,11 @@ def run_eval(
                 )
             except Exception:
                 # Any unexpected agent error -> fixture scores 0 across all
-                # buckets; still need to advance counters consistently.
-                expected_event_count = len(resolved_extract.get("events", []))
-                # Each event has 3 required + 3 optional keys, plus 2 summary
-                # keys; we use the same expected-field count denominator the
-                # success path uses.
+                # buckets; still need to advance the field-count denominator
+                # so a partial-failure run doesn't get an inflated accuracy
+                # ratio.  Each expected event contributes 3 required keys
+                # (activity / timestamp / lifecycle) plus any optional keys
+                # set in the fixture, plus 2 summary keys.
                 total_field_count += _expected_field_count(resolved_extract)
                 continue
 
@@ -276,7 +276,11 @@ def run_eval(
             # event_id) — same order as the LLM input.
 
             # Field-level matches.
-            matches, total = _score_fields(resolved_extract, persisted_non_summary, persisted_summary)
+            matches, total = _score_fields(
+                resolved_extract,
+                persisted_non_summary,
+                persisted_summary,
+            )
             total_field_matches += matches
             total_field_count += total
 
@@ -369,7 +373,7 @@ def _build_eval_world(
 def _resolve_goal_placeholders(
     extract: dict[str, Any], goals_repo: GoalsRepository
 ) -> dict[str, Any]:
-    """Replace any :data:`GOAL_PLACEHOLDER` ``advances_goal_id`` values with a real ULID.
+    """Replace any :data:`GOAL_PLACEHOLDER` advances_goal_id with a real ULID.
 
     Inserts a goal into the repo on first encounter and reuses the same id
     across all events in the extract.
@@ -420,9 +424,10 @@ def _score_fields(
         if "advances_goal_id" in exp_ev and exp_ev["advances_goal_id"] is not None:
             total += 1
             if idx < len(persisted_non_summary):
-                if persisted_non_summary[idx].get("advances_goal") == exp_ev[
-                    "advances_goal_id"
-                ]:
+                if (
+                    persisted_non_summary[idx].get("advances_goal")
+                    == exp_ev["advances_goal_id"]
+                ):
                     matches += 1
         if "duration_minutes" in exp_ev and exp_ev["duration_minutes"] is not None:
             total += 1
