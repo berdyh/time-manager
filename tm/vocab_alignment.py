@@ -343,7 +343,7 @@ class VocabAligner:
 
     def find_drifted_activities(
         self,
-        idle_days: int = 14,
+        idle_days: int = 30,
         *,
         as_of: str | None = None,
     ) -> list[str]:
@@ -352,7 +352,8 @@ class VocabAligner:
         Parameters
         ----------
         idle_days:
-            Threshold in days. Default 14.
+            Threshold in days. Default 30. The ``tm vocab drift`` CLI
+            overrides this to 14 at the call site.
         as_of:
             ISO 8601 anchor timestamp (defaults to now-UTC).  An activity
             counts as "drifted" if it has no events with
