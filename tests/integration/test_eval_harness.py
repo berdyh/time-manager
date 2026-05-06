@@ -225,3 +225,55 @@ def test_fixture_count_meets_plan_minimum() -> None:
     """Plan locks the v1 minimum at 5 fixtures."""
     pairs = list(FIXTURES_DIR.glob("*_transcript.txt"))
     assert len(pairs) >= 5
+
+
+# ---------------------------------------------------------------------------
+# Live LLM mode
+# ---------------------------------------------------------------------------
+
+
+def test_run_eval_mock_mode_baseline() -> None:
+    result = run_eval(live_llm=False)
+
+    assert result.fixture_count >= 5
+    assert result.field_level_accuracy >= PLAN_THRESHOLD_FIELD_LEVEL
+    assert result.trace_level_accuracy >= PLAN_THRESHOLD_TRACE_LEVEL
+    assert result.variant_assignment_accuracy >= PLAN_THRESHOLD_VARIANT_ASSIGNMENT
+    assert result.field_level_passed is True
+    assert result.trace_level_passed is True
+    assert result.variant_assignment_passed is True
+
+
+@pytest.mark.skipif(
+    not __import__("os").environ.get("TM_LLM_API_KEY"),
+    reason="TM_LLM_API_KEY not set; live LLM smoke would spend API tokens",
+)
+def test_run_eval_live_mode_smoke(tmp_path: Path) -> None:
+    source_transcript = FIXTURES_DIR / "empty_summary_transcript.txt"
+    source_expected = FIXTURES_DIR / "empty_summary_expected.json"
+    (tmp_path / source_transcript.name).write_text(
+        source_transcript.read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    (tmp_path / source_expected.name).write_text(
+        source_expected.read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+
+    result = run_eval(tmp_path, live_llm=True)
+
+    assert result.fixture_count == 1
+    assert result.fixture_names == ("empty_summary",)
+    assert 0.0 <= result.field_level_accuracy <= 1.0
+    assert 0.0 <= result.trace_level_accuracy <= 1.0
+    assert 0.0 <= result.variant_assignment_accuracy <= 1.0
+
+
+def test_live_mode_skips_without_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("TM_LLM_API_KEY", raising=False)
+
+    with pytest.raises(
+        RuntimeError,
+        match="live_llm=True requires TM_LLM_API_KEY",
+    ):
+        run_eval(live_llm=True)

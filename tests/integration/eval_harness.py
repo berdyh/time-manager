@@ -4,7 +4,8 @@ T-INT-03 ships an in-tree placeholder for the planned ``time-manager-evals``
 companion repo: a small, dependency-free harness that loads
 ``(transcript, expected)`` fixture pairs from
 ``tests/integration/fixtures/``, runs the :class:`DebriefAgent` against
-each (with the LLM mocked to return the expected dict), and computes:
+each (with the LLM mocked by default, or live when explicitly requested),
+and computes:
 
 * **field-level accuracy** — fraction of (event_idx, key) pairs in the
   expected dict that exactly match what the agent persisted.
@@ -29,8 +30,12 @@ regression contract so any future agent change that mangles persistence
 Future tasks (live-LLM evals against hand-labels) will surface real
 non-trivial accuracies under the same harness.
 
-NO live LLM calls and NO live network. Every fixture is exercised against
-a fresh ``tmp_path`` SQLite database with the full migration chain applied.
+By default there are NO live LLM calls and NO live network. Passing
+``live_llm=True`` wires real :class:`AnthropicAdapter` instances for both
+the debrief extractor and vocabulary aligner; this requires
+``TM_LLM_API_KEY`` and may spend API tokens. Every fixture is exercised
+against a fresh ``tmp_path`` SQLite database with the full migration chain
+applied.
 
 Public surface:
 
@@ -49,6 +54,7 @@ production runtime code; it is exercised exclusively from
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -60,6 +66,7 @@ from tm.engines.variant_cluster import (
     BAD_DAY_THRESHOLD,
     GOOD_DAY_THRESHOLD,
 )
+from tm.llm.anthropic_adapter import AnthropicAdapter
 from tm.llm.client import ExtractResponse, Usage
 from tm.llm.cost_meter import CostMeter
 from tm.models.outcome import OutcomeAggregator
@@ -191,14 +198,17 @@ def run_eval(
     field_threshold: float = PLAN_THRESHOLD_FIELD_LEVEL,
     trace_threshold: float = PLAN_THRESHOLD_TRACE_LEVEL,
     variant_threshold: float = PLAN_THRESHOLD_VARIANT_ASSIGNMENT,
+    live_llm: bool = False,
 ) -> EvalResult:
     """Run the in-tree v1 eval against every fixture under ``fixtures_dir``.
 
     For each fixture: build a tmp SQLite DB, seed vocab + the goal placeholder,
-    construct a :class:`DebriefAgent` with a Mock :class:`LLMClient` whose
-    ``extract.return_value`` wraps the fixture's ``expected.extract`` dict
-    (with the goal placeholder swapped for the real ULID), invoke
-    ``extract_and_persist``, then read the persisted events back and compare.
+    construct a :class:`DebriefAgent`, invoke ``extract_and_persist``, then
+    read the persisted events back and compare. In default mock mode the
+    agent's Mock :class:`LLMClient` has ``extract.return_value`` set to the
+    fixture's ``expected.extract`` dict (with the goal placeholder swapped for
+    the real ULID). In live mode, real :class:`AnthropicAdapter` instances are
+    used and the fixture extract is used only as the scoring oracle.
 
     Each fixture gets its own ``tempfile.TemporaryDirectory`` so the runs
     are fully isolated.
@@ -213,7 +223,15 @@ def run_eval(
     -------
     EvalResult
         Frozen dataclass with the three accuracies + their pass flags.
+
+    Raises
+    ------
+    RuntimeError
+        If ``live_llm=True`` and ``TM_LLM_API_KEY`` is unset.
     """
+    if live_llm and not os.environ.get("TM_LLM_API_KEY"):
+        raise RuntimeError("live_llm=True requires TM_LLM_API_KEY to be set")
+
     fixtures = load_fixtures(fixtures_dir)
     fixture_names = tuple(name for name, _, _ in fixtures)
 
@@ -245,16 +263,17 @@ def run_eval(
                 outcome_aggregator,
                 agent,
                 resolved_extract,
-            ) = _build_eval_world(db_path, expected)
+            ) = _build_eval_world(db_path, expected, live_llm=live_llm)
 
             case_date = str(expected.get("case_date") or "")
             agent_input_transcript = transcript.strip() or "n/a"
 
-            # Configure mock LLM with the resolved expected extract dict.
-            agent._llm.extract.return_value = ExtractResponse(  # type: ignore[attr-defined]
-                data=resolved_extract,
-                usage=Usage(input_tokens=1, output_tokens=1),
-            )
+            if not live_llm:
+                # Configure mock LLM with the resolved expected extract dict.
+                agent._llm.extract.return_value = ExtractResponse(  # type: ignore[attr-defined]
+                    data=resolved_extract,
+                    usage=Usage(input_tokens=1, output_tokens=1),
+                )
 
             try:
                 agent.extract_and_persist(
@@ -328,6 +347,8 @@ def run_eval(
 def _build_eval_world(
     db_path: Path,
     expected: dict[str, Any],
+    *,
+    live_llm: bool = False,
 ) -> tuple[
     EventsRepository,
     GoalsRepository,
@@ -338,9 +359,10 @@ def _build_eval_world(
     """Spin up an isolated SQLite world wired for one fixture run.
 
     Returns (events_repo, goals_repo, outcome_aggregator, agent,
-    resolved_extract).  ``resolved_extract`` is a deep-copied version of
+    resolved_extract). ``resolved_extract`` is a deep-copied version of
     ``expected['extract']`` with :data:`GOAL_PLACEHOLDER` substituted with a
-    real goal ULID seeded into the goals repo.
+    real goal ULID seeded into the goals repo. In live mode it is used only
+    for scoring; it is never injected into the LLM.
     """
     store = Store(db_path, migrations_dir=MIGRATIONS_DIR)
     store.apply_pending_migrations()
@@ -359,10 +381,10 @@ def _build_eval_world(
         expected.get("extract") or {}, goals_repo
     )
 
-    vocab_llm = Mock()
+    vocab_llm = AnthropicAdapter() if live_llm else Mock()
     aligner = VocabAligner(vocab_repo, vocab_llm)
 
-    debrief_llm = Mock()
+    debrief_llm = AnthropicAdapter() if live_llm else Mock()
     agent = DebriefAgent(
         llm_client=debrief_llm,
         vocab_aligner=aligner,
