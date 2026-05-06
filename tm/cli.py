@@ -11,8 +11,10 @@ from tm import __version__
 from tm._paths import default_db_path
 from tm.commands.bottlenecks import bottlenecks_app
 from tm.commands.daemon import daemon_app
+from tm.commands.debrief import debrief_app
 from tm.commands.discover import discover_app
 from tm.commands.goal import goal_app
+from tm.commands.suggest import suggest_app
 from tm.commands.variants import variants_app
 from tm.commands.vocab import vocab_app
 from tm.repositories.vocabulary import VocabularyRepository
@@ -21,8 +23,10 @@ from tm.stores.sqlite_store import SQLiteStore
 app = typer.Typer(help="tm — behavioral time manager CLI.")
 app.add_typer(bottlenecks_app, name="bottlenecks")
 app.add_typer(daemon_app, name="daemon")
+app.add_typer(debrief_app, name="debrief")
 app.add_typer(discover_app, name="discover")
 app.add_typer(goal_app, name="goal")
+app.add_typer(suggest_app, name="suggest")
 app.add_typer(variants_app, name="variants")
 app.add_typer(vocab_app, name="vocab")
 
