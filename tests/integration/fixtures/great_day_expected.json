@@ -1,0 +1,30 @@
+{
+  "case_date": "2026-05-05",
+  "expected_variant_label": "good_day",
+  "expected_outcome_score": 2,
+  "extract": {
+    "events": [
+      {
+        "activity": "deep_work",
+        "timestamp": "2026-05-05T09:00:00Z",
+        "lifecycle": "complete",
+        "advances_goal_id": "__GOAL_PAYMENTS__",
+        "duration_minutes": 90
+      },
+      {
+        "activity": "meeting",
+        "timestamp": "2026-05-05T13:00:00Z",
+        "lifecycle": "complete"
+      },
+      {
+        "activity": "exercise",
+        "timestamp": "2026-05-05T18:00:00Z",
+        "lifecycle": "complete"
+      }
+    ],
+    "summary": {
+      "planned_tasks_completed": 8,
+      "planned_tasks_total": 10
+    }
+  }
+}

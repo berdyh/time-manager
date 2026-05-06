@@ -1,0 +1,23 @@
+{
+  "case_date": "2026-05-06",
+  "expected_variant_label": "mixed",
+  "expected_outcome_score": 1,
+  "extract": {
+    "events": [
+      {
+        "activity": "shallow_work",
+        "timestamp": "2026-05-06T09:00:00Z",
+        "lifecycle": "complete"
+      },
+      {
+        "activity": "meeting",
+        "timestamp": "2026-05-06T11:00:00Z",
+        "lifecycle": "complete"
+      }
+    ],
+    "summary": {
+      "planned_tasks_completed": 8,
+      "planned_tasks_total": 10
+    }
+  }
+}

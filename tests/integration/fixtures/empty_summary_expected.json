@@ -1,0 +1,23 @@
+{
+  "case_date": "2026-05-09",
+  "expected_variant_label": "bad_day",
+  "expected_outcome_score": 0,
+  "extract": {
+    "events": [
+      {
+        "activity": "learning",
+        "timestamp": "2026-05-09T16:00:00Z",
+        "lifecycle": "complete"
+      },
+      {
+        "activity": "rest",
+        "timestamp": "2026-05-09T21:00:00Z",
+        "lifecycle": "complete"
+      }
+    ],
+    "summary": {
+      "planned_tasks_completed": 0,
+      "planned_tasks_total": 0
+    }
+  }
+}

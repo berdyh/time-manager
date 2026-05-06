@@ -1,0 +1,39 @@
+{
+  "case_date": "2026-05-10",
+  "expected_variant_label": "good_day",
+  "expected_outcome_score": 2,
+  "extract": {
+    "events": [
+      {
+        "activity": "email",
+        "timestamp": "2026-05-10T08:00:00Z",
+        "lifecycle": "complete"
+      },
+      {
+        "activity": "meeting",
+        "timestamp": "2026-05-10T10:00:00Z",
+        "lifecycle": "complete"
+      },
+      {
+        "activity": "deep_work",
+        "timestamp": "2026-05-10T11:00:00Z",
+        "lifecycle": "complete",
+        "advances_goal_id": "__GOAL_PAYMENTS__"
+      },
+      {
+        "activity": "meal",
+        "timestamp": "2026-05-10T12:30:00Z",
+        "lifecycle": "complete"
+      },
+      {
+        "activity": "code_review",
+        "timestamp": "2026-05-10T15:00:00Z",
+        "lifecycle": "complete"
+      }
+    ],
+    "summary": {
+      "planned_tasks_completed": 9,
+      "planned_tasks_total": 10
+    }
+  }
+}
