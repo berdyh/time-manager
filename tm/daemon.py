@@ -66,7 +66,6 @@ Out of scope (deliberately deferred)
 from __future__ import annotations
 
 import errno
-import hashlib
 import json
 import logging
 import os
@@ -90,7 +89,7 @@ from tm.repositories.goals import GoalsRepository
 from tm.repositories.telemetry import SuggestionTelemetryRepository
 from tm.repositories.vocabulary import VocabularyRepository
 from tm.stores.kuzu_projection import rebuild_kuzu_projection
-from tm.stores.kuzu_store import KuzuStore, PersistedModel, PetriNetData
+from tm.stores.kuzu_store import KuzuStore
 from tm.stores.sqlite_store import SQLiteStore
 
 __all__ = [
@@ -589,15 +588,14 @@ class TMDaemon:
                     kuzu_store.delete_model(persisted.model_id)
                     return {"ok": True, "model_id": None, "skipped": "empty_log"}
 
-                response_model_id = _sha256_hex(persisted.model_id)
-                net = _move_projection_model_id(
-                    kuzu_store=kuzu_store,
-                    persisted=persisted,
-                    target_model_id=response_model_id,
-                )
+                net = kuzu_store.get_petri_net(persisted.model_id)
+                if net is None:
+                    raise RuntimeError(
+                        "persisted Kuzu model was not readable after rebuild"
+                    )
                 return {
                     "ok": True,
-                    "model_id": response_model_id,
+                    "model_id": persisted.model_id,
                     "lens": persisted.lens,
                     "since": persisted.since,
                     "until": persisted.until,
@@ -698,38 +696,6 @@ def _required_path_string(value: Any, *, key: str) -> str:
     if not isinstance(value, str) or not value:
         raise ValueError(f"{key} must be a non-empty path string")
     return value
-
-
-def _sha256_hex(value: str) -> str:
-    return hashlib.sha256(value.encode("utf-8")).hexdigest()
-
-
-def _move_projection_model_id(
-    *,
-    kuzu_store: KuzuStore,
-    persisted: PersistedModel,
-    target_model_id: str,
-) -> PetriNetData:
-    net = kuzu_store.get_petri_net(persisted.model_id)
-    if net is None:
-        raise RuntimeError("persisted Kuzu model was not readable after rebuild")
-    if target_model_id == persisted.model_id:
-        return net
-
-    kuzu_store.persist_model(
-        model_id=target_model_id,
-        net_data=net,
-        lens=persisted.lens,
-        since=persisted.since,
-        until=persisted.until,
-        fitness=persisted.fitness,
-        precision=persisted.precision,
-        case_count=persisted.case_count,
-        activity_count=persisted.activity_count,
-        discovered_at=persisted.discovered_at,
-    )
-    kuzu_store.delete_model(persisted.model_id)
-    return net
 
 
 def _count_projection_case_events(

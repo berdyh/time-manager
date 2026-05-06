@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import socket
 import stat
 import threading
@@ -358,7 +357,7 @@ def test_handle_rebuild_kuzu_projection_workday_success(tmp_path: Path) -> None:
     assert result["ok"] is True
     model_id = result["model_id"]
     assert isinstance(model_id, str)
-    assert re.fullmatch(r"[0-9a-f]{64}", model_id)
+    assert model_id == "model::workday::2026-01-01::2026-01-31"
     assert result["lens"] == "workday"
     assert result["since"] == "2026-01-01"
     assert result["until"] == "2026-01-31"
