@@ -49,13 +49,17 @@ def _insert_event(
     db_path: Path,
     activity: str,
     *,
-    ts: str = "2026-05-04T10:00:00Z",
+    ts: str | None = None,
 ) -> None:
     """Insert a minimal event row for the given activity.
 
-    Default timestamp is recent (within 7 days of the test date 2026-05-05)
-    so the default ``--since 7 days ago`` window picks it up.
+    Default timestamp is ``_days_ago(2)`` so it always falls within the
+    review default ``--since 7 days ago`` window, regardless of the
+    calendar date the test runs on. Tests that need an absolute timestamp
+    can pass ``ts=`` explicitly.
     """
+    if ts is None:
+        ts = _days_ago(2)
     conn = sqlite3.connect(str(db_path))
     try:
         conn.execute(
