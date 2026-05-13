@@ -9,9 +9,8 @@ from typing import Annotated
 
 import typer
 
+from tm.llm.anthropic_adapter import ANTHROPIC_API_KEY_ENV as API_KEY_ENV
 from tm.stores.sqlite_store import SQLiteStore
-
-API_KEY_ENV = "TM_LLM_API_KEY"
 
 DbPathOption = Annotated[
     Path | None,

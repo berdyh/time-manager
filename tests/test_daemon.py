@@ -841,3 +841,19 @@ def test_handle_propose_suggestion_with_suggestion(
     assert isinstance(result["suggestion_id"], str) and result["suggestion_id"]
     assert "suggested_at" in result
     llm.extract.assert_called_once()
+
+
+def test_llm_methods_bypass_write_lock() -> None:
+    """LLM-backed handlers must NOT be classified as lock-held writes.
+
+    Long-running LLM calls would otherwise block sibling RPC writes
+    (e.g. a user typing ``tm goal add`` while cron is debriefing). The
+    dispatch classification lives in module-level frozensets so this
+    assertion is cheap to express.
+    """
+    from tm import daemon as daemon_mod
+
+    assert "run_debrief" in daemon_mod._LLM_METHODS
+    assert "run_debrief" not in daemon_mod._READ_METHODS
+    assert "propose_suggestion" in daemon_mod._LLM_METHODS
+    assert "propose_suggestion" not in daemon_mod._READ_METHODS

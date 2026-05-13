@@ -45,13 +45,17 @@ if TYPE_CHECKING:  # pragma: no cover
     from anthropic import Anthropic
 
 __all__ = [
+    "ANTHROPIC_API_KEY_ENV",
     "DEFAULT_MAX_TOKENS",
     "DEFAULT_MODEL",
     "EXTRACT_TOOL_NAME",
     "AnthropicAdapter",
 ]
 
-_ENV_API_KEY = "TM_LLM_API_KEY"
+# Canonical env var name for the LLM API key. Other modules import this
+# constant rather than redefining the literal — see ``tm.commands._shared``
+# and ``tm.daemon``.
+ANTHROPIC_API_KEY_ENV = "TM_LLM_API_KEY"
 
 # Default model id for the v1 adapter. Callers may override per-call.
 DEFAULT_MODEL = "claude-sonnet-4-6"
@@ -89,9 +93,9 @@ class AnthropicAdapter:
         if client is not None:
             self._client = client
         else:
-            api_key = os.environ.get(_ENV_API_KEY)
+            api_key = os.environ.get(ANTHROPIC_API_KEY_ENV)
             if not api_key:
-                raise LLMClientError(f"{_ENV_API_KEY} not set")
+                raise LLMClientError(f"{ANTHROPIC_API_KEY_ENV} not set")
             # Local import so module load doesn't pay for SDK init in tests
             # that inject their own mock client.
             from anthropic import Anthropic

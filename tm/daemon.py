@@ -20,7 +20,7 @@ Threading model
 - ``run()`` runs the accept loop on the calling thread; each accepted
   connection is handled by a dedicated worker thread (one-thread-per-conn —
   v1 traffic is low and this keeps the implementation small and obvious).
-- A single coarse :class:`threading.Lock` (``self._lock``) serialises ALL
+- A single coarse :class:`threading.Lock` (``self._lock``) serialises most
   writes.  Repository write methods open per-call ``sqlite3.connect``s; this
   lock prevents two daemon-side writers from racing.  Note: SQLite WAL also
   protects against external readers, but two simultaneous writers can still
@@ -28,6 +28,11 @@ Threading model
 - Read paths (``CostMeter.monthly_total``, repos' ``get`` / ``list``) are NOT
   taken under the lock — WAL handles read concurrency natively and the lock
   exists only to serialise *writes*.
+- LLM-backed write handlers (see ``_LLM_METHODS``) ALSO bypass ``self._lock``
+  so a long-running LLM call doesn't block sibling RPC writes (e.g. a user
+  typing ``tm goal add`` while cron is debriefing). SQLite WAL plus the
+  per-call ``sqlite3.connect`` busy_timeout in the repositories handles the
+  rare case where two LLM handlers commit simultaneously.
 - Per the carry-forward intel from T-FND-02: ``SQLiteStore`` itself uses one
   per-Store connection and busy-retries against external contention, but does
   not protect against two ``Store`` instances in the same process writing
@@ -66,6 +71,7 @@ Out of scope (deliberately deferred)
 from __future__ import annotations
 
 import errno
+import functools
 import json
 import logging
 import os
@@ -83,7 +89,7 @@ from typing import Any
 from tm._paths import default_data_dir
 from tm.engines.process_mining import ProcessMiner
 from tm.engines.variant_cluster import VariantClusterer
-from tm.llm.anthropic_adapter import AnthropicAdapter
+from tm.llm.anthropic_adapter import ANTHROPIC_API_KEY_ENV, AnthropicAdapter
 from tm.llm.client import LLMClient
 from tm.llm.cost_meter import CostMeter
 from tm.llm.errors import CostCapExceeded, LLMClientError
@@ -135,12 +141,16 @@ WORKER_JOIN_TIMEOUT_S = 5.0
 _log = logging.getLogger(__name__)
 
 
-# Env var carrying the LLM API key. Defined as a module constant rather than
-# imported from ``tm.llm.anthropic_adapter`` (which has a private ``_ENV_API_KEY``)
-# so the daemon can fail fast at handler-call time WITHOUT triggering the
-# adapter's own constructor-time check (which would raise LLMClientError with
-# the wire-incompatible "TM_LLM_API_KEY not set" message).
-_LLM_API_KEY_ENV_VAR = "TM_LLM_API_KEY"
+# Dispatch classification for RPC methods.
+#
+# - ``_READ_METHODS``: read-only handlers; no daemon lock taken.
+# - ``_LLM_METHODS``: LLM-backed write handlers that bypass the daemon's
+#   coarse write lock so a long-running LLM call doesn't block sibling RPC
+#   writes. SQLite WAL + per-call ``sqlite3.connect`` busy_timeout handle the
+#   rare case where two LLM handlers commit simultaneously.
+# - Everything else: classic write handler, serialised under ``self._lock``.
+_READ_METHODS = frozenset({"ping", "check_budget"})
+_LLM_METHODS = frozenset({"run_debrief", "propose_suggestion"})
 
 
 def _build_llm_client(model: str, max_tokens: int) -> LLMClient:
@@ -151,6 +161,35 @@ def _build_llm_client(model: str, max_tokens: int) -> LLMClient:
     a module-level function so ``unittest.mock.patch`` resolves it cleanly.
     """
     return AnthropicAdapter(model=model, max_tokens=max_tokens)
+
+
+def _llm_envelope(
+    fn: Callable[[TMDaemon, dict[str, Any]], dict[str, Any]],
+) -> Callable[[TMDaemon, dict[str, Any]], dict[str, Any]]:
+    """Wrap an LLM-backed RPC handler with the standard JSON error envelope.
+
+    Returns ``{"ok": False, "error": "MissingApiKey", ...}`` if the API key
+    env var is unset, otherwise runs the wrapped handler and converts any
+    raised exception to a structured error envelope. The success path passes
+    through unchanged (the wrapped handler returns its own success dict).
+    """
+
+    @functools.wraps(fn)
+    def wrapped(self: TMDaemon, params: dict[str, Any]) -> dict[str, Any]:
+        if not os.environ.get(ANTHROPIC_API_KEY_ENV):
+            return {
+                "ok": False,
+                "error": "MissingApiKey",
+                "detail": f"{ANTHROPIC_API_KEY_ENV} environment variable is not set",
+            }
+        try:
+            return fn(self, params)
+        except LLMClientError as exc:
+            return {"ok": False, "error": "LLMClientError", "detail": str(exc)}
+        except Exception as exc:  # noqa: BLE001 — RPC contract returns structured errors
+            return {"ok": False, "error": type(exc).__name__, "detail": str(exc)}
+
+    return wrapped
 
 
 # ---------------------------------------------------------------------- types
@@ -377,13 +416,12 @@ class TMDaemon:
         if handler is None:
             return DaemonResponse.failure(f"unknown method: {req.method!r}")
 
-        is_write = req.method != "ping" and req.method != "check_budget"
         try:
-            if is_write:
+            if req.method in _READ_METHODS or req.method in _LLM_METHODS:
+                result = handler(req.params)
+            else:
                 with self._lock:
                     result = handler(req.params)
-            else:
-                result = handler(req.params)
             return DaemonResponse.success(result)
         except CostCapExceeded as exc:
             return DaemonResponse.failure(str(exc))
@@ -663,99 +701,78 @@ class TMDaemon:
 
     # ----- LLM-backed agents (debrief + scheduler) -----
 
-    def _handle_run_debrief(self, params: dict[str, Any]) -> Any:
+    @_llm_envelope
+    def _handle_run_debrief(self, params: dict[str, Any]) -> dict[str, Any]:
         """Run a one-shot debrief extraction without spinning up a new process.
 
         Constructs a per-call :class:`DebriefAgent` (matching the existing
         per-call pattern used elsewhere in the daemon) but reuses the daemon's
         long-lived :class:`CostMeter` singleton so soft-alarm semantics stay
         consistent across requests. The TM_LLM_API_KEY check happens AT REQUEST
-        TIME — the daemon must continue to start fine without the key set.
+        TIME (in the ``@_llm_envelope`` decorator) — the daemon must continue
+        to start fine without the key set.
         """
         # Local imports keep daemon module load cheap when these handlers are
         # never called.
         from tm.agents.debrief import DebriefAgent
 
-        try:
-            transcript = params.get("transcript")
-            if not isinstance(transcript, str) or not transcript.strip():
-                raise ValueError("transcript must be a non-empty string")
+        transcript = params.get("transcript")
+        if not isinstance(transcript, str) or not transcript.strip():
+            raise ValueError("transcript must be a non-empty string")
 
-            case_date_raw = params.get("case_date")
-            if not isinstance(case_date_raw, str) or not case_date_raw:
-                raise ValueError("case_date must be a non-empty string")
+        case_date_raw = params.get("case_date")
+        if not isinstance(case_date_raw, str) or not case_date_raw:
+            raise ValueError("case_date must be a non-empty string")
 
-            model = params.get("model")
-            model_str = str(model) if isinstance(model, str) and model else None
-            max_tokens = params.get("max_tokens")
-            max_tokens_int = int(max_tokens) if isinstance(max_tokens, int) else None
+        model = params.get("model")
+        model_str = str(model) if isinstance(model, str) and model else None
+        max_tokens = params.get("max_tokens")
+        max_tokens_int = int(max_tokens) if isinstance(max_tokens, int) else None
 
-            if not os.environ.get(_LLM_API_KEY_ENV_VAR):
-                return {
-                    "ok": False,
-                    "error": "MissingApiKey",
-                    "detail": (
-                        f"{_LLM_API_KEY_ENV_VAR} environment variable is not set"
-                    ),
-                }
+        # Build LLM client + agent dependencies per-request. The factory
+        # is module-level so tests can patch it cleanly.
+        llm = _build_llm_client(
+            model=model_str or "claude-sonnet-4-6",
+            max_tokens=max_tokens_int or 4096,
+        )
 
-            # Build LLM client + agent dependencies per-request. The factory
-            # is module-level so tests can patch it cleanly.
-            try:
-                llm = _build_llm_client(
-                    model=model_str or "claude-sonnet-4-6",
-                    max_tokens=max_tokens_int or 4096,
-                )
-            except LLMClientError as exc:
-                # Adapter construction failed (e.g. SDK couldn't initialise).
-                return {
-                    "ok": False,
-                    "error": type(exc).__name__,
-                    "detail": str(exc),
-                }
+        vocab_repo = VocabularyRepository(self._db_path)
+        events_repo = EventsRepository(self._db_path)
+        goals_repo = GoalsRepository(self._db_path)
+        aligner = VocabAligner(vocab_repo, llm)
 
-            vocab_repo = VocabularyRepository(self._db_path)
-            events_repo = EventsRepository(self._db_path)
-            goals_repo = GoalsRepository(self._db_path)
-            aligner = VocabAligner(vocab_repo, llm)
+        agent_kwargs: dict[str, Any] = {
+            "llm_client": llm,
+            "vocab_aligner": aligner,
+            "goals_repo": goals_repo,
+            "events_repo": events_repo,
+            "cost_meter": self._cost_meter,
+        }
+        if model_str is not None:
+            agent_kwargs["model"] = model_str
+        if max_tokens_int is not None:
+            agent_kwargs["max_tokens"] = max_tokens_int
 
-            agent_kwargs: dict[str, Any] = {
-                "llm_client": llm,
-                "vocab_aligner": aligner,
-                "goals_repo": goals_repo,
-                "events_repo": events_repo,
-                "cost_meter": self._cost_meter,
-            }
-            if model_str is not None:
-                agent_kwargs["model"] = model_str
-            if max_tokens_int is not None:
-                agent_kwargs["max_tokens"] = max_tokens_int
+        agent = DebriefAgent(**agent_kwargs)
+        result = agent.extract_and_persist(
+            transcript=transcript,
+            case_date=case_date_raw,
+        )
+        return {
+            "ok": True,
+            "case_date": result.case_date,
+            "events_persisted": result.events_persisted,
+            "summary_event_persisted": result.summary_event_persisted,
+            "novel_labels": list(result.novel_labels),
+            "summary": dict(result.summary),
+            "cost_estimated_usd": result.cost_estimated_usd,
+            "cost_actual_usd": result.cost_actual_usd,
+            "extractor_version": result.extractor_version,
+            "extracted_at": result.extracted_at,
+        }
 
-            agent = DebriefAgent(**agent_kwargs)
-            result = agent.extract_and_persist(
-                transcript=transcript,
-                case_date=case_date_raw,
-            )
-            return {
-                "ok": True,
-                "case_date": result.case_date,
-                "events_persisted": result.events_persisted,
-                "summary_event_persisted": result.summary_event_persisted,
-                "novel_labels": list(result.novel_labels),
-                "summary": dict(result.summary),
-                "cost_estimated_usd": result.cost_estimated_usd,
-                "cost_actual_usd": result.cost_actual_usd,
-                "extractor_version": result.extractor_version,
-                "extracted_at": result.extracted_at,
-            }
-        except Exception as exc:  # noqa: BLE001 - RPC contract returns structured errors
-            return {
-                "ok": False,
-                "error": type(exc).__name__,
-                "detail": str(exc),
-            }
-
-    def _handle_propose_suggestion(self, params: dict[str, Any]) -> Any:
+    @_llm_envelope
+    def _handle_propose_suggestion(self, params: dict[str, Any]) -> dict[str, Any]:
         """Run one scheduler propose-suggestion cycle without a new process.
 
         Mirrors :meth:`_handle_run_debrief`'s per-call construction pattern but
@@ -768,113 +785,88 @@ class TMDaemon:
             SchedulerSkipReason,
         )
 
-        try:
-            case_date_raw = params.get("case_date")
-            if not isinstance(case_date_raw, str) or not case_date_raw:
-                raise ValueError("case_date must be a non-empty string")
+        case_date_raw = params.get("case_date")
+        if not isinstance(case_date_raw, str) or not case_date_raw:
+            raise ValueError("case_date must be a non-empty string")
 
-            case_goal_id_raw = params.get("case_goal_id")
-            if case_goal_id_raw is not None and not isinstance(case_goal_id_raw, str):
-                raise ValueError("case_goal_id must be a string or null")
-            case_goal_id = case_goal_id_raw or None
+        case_goal_id_raw = params.get("case_goal_id")
+        if case_goal_id_raw is not None and not isinstance(case_goal_id_raw, str):
+            raise ValueError("case_goal_id must be a string or null")
+        case_goal_id = case_goal_id_raw or None
 
-            model = params.get("model")
-            model_str = str(model) if isinstance(model, str) and model else None
-            max_per_day_raw = params.get("max_per_day")
-            max_per_day = (
-                int(max_per_day_raw) if isinstance(max_per_day_raw, int) else None
-            )
+        model = params.get("model")
+        model_str = str(model) if isinstance(model, str) and model else None
+        max_per_day_raw = params.get("max_per_day")
+        max_per_day = int(max_per_day_raw) if isinstance(max_per_day_raw, int) else None
 
-            if not os.environ.get(_LLM_API_KEY_ENV_VAR):
-                return {
-                    "ok": False,
-                    "error": "MissingApiKey",
-                    "detail": (
-                        f"{_LLM_API_KEY_ENV_VAR} environment variable is not set"
-                    ),
-                }
+        llm = _build_llm_client(
+            model=model_str or "claude-sonnet-4-6",
+            max_tokens=1024,
+        )
 
-            try:
-                llm = _build_llm_client(
-                    model=model_str or "claude-sonnet-4-6",
-                    max_tokens=1024,
-                )
-            except LLMClientError as exc:
-                return {
-                    "ok": False,
-                    "error": type(exc).__name__,
-                    "detail": str(exc),
-                }
+        events_repo = EventsRepository(self._db_path)
+        goals_repo = GoalsRepository(self._db_path)
+        telemetry_repo = SuggestionTelemetryRepository(self._db_path)
+        outcome_aggregator = OutcomeAggregator(events_repo)
+        process_miner = ProcessMiner(events_repo)
+        variant_clusterer = VariantClusterer(events_repo, outcome_aggregator)
 
-            events_repo = EventsRepository(self._db_path)
-            goals_repo = GoalsRepository(self._db_path)
-            telemetry_repo = SuggestionTelemetryRepository(self._db_path)
-            outcome_aggregator = OutcomeAggregator(events_repo)
-            process_miner = ProcessMiner(events_repo)
-            variant_clusterer = VariantClusterer(events_repo, outcome_aggregator)
+        # SchedulerAgent's max_tokens is intentionally not exposed over the
+        # wire (unlike run_debrief): scheduler outputs are bounded by the
+        # one-suggestion-per-call contract, so the agent's internal default
+        # is the right knob. If callers ever need to override it, expose
+        # max_tokens here and mirror the debrief handler's pattern.
+        agent_kwargs: dict[str, Any] = {
+            "llm_client": llm,
+            "process_miner": process_miner,
+            "variant_clusterer": variant_clusterer,
+            "outcome_aggregator": outcome_aggregator,
+            "telemetry_repo": telemetry_repo,
+            "events_repo": events_repo,
+            "goals_repo": goals_repo,
+            "cost_meter": self._cost_meter,
+            "max_proactive_per_day": max_per_day,
+        }
+        if model_str is not None:
+            agent_kwargs["model"] = model_str
 
-            # SchedulerAgent's max_tokens is intentionally not exposed over the
-            # wire (unlike run_debrief): scheduler outputs are bounded by the
-            # one-suggestion-per-call contract, so the agent's internal default
-            # is the right knob. If callers ever need to override it, expose
-            # max_tokens here and mirror the debrief handler's pattern.
-            agent_kwargs: dict[str, Any] = {
-                "llm_client": llm,
-                "process_miner": process_miner,
-                "variant_clusterer": variant_clusterer,
-                "outcome_aggregator": outcome_aggregator,
-                "telemetry_repo": telemetry_repo,
-                "events_repo": events_repo,
-                "goals_repo": goals_repo,
-                "cost_meter": self._cost_meter,
-                "max_proactive_per_day": max_per_day,
-            }
-            if model_str is not None:
-                agent_kwargs["model"] = model_str
+        agent = SchedulerAgent(**agent_kwargs)
+        outcome = agent.propose_suggestion(
+            case_date=case_date_raw,
+            case_goal_id=case_goal_id,
+        )
 
-            agent = SchedulerAgent(**agent_kwargs)
-            outcome = agent.propose_suggestion(
-                case_date=case_date_raw,
-                case_goal_id=case_goal_id,
-            )
-
-            if isinstance(outcome, SchedulerSkipReason):
-                return {
-                    "ok": True,
-                    "kind": "skipped",
-                    "reason": outcome.reason,
-                    "detail": outcome.detail,
-                }
-
-            assert isinstance(outcome, ScheduledSuggestion)  # narrow for mypy
-            candidate = outcome.candidate
+        if isinstance(outcome, SchedulerSkipReason):
             return {
                 "ok": True,
-                "kind": "suggestion",
-                "suggestion_id": outcome.suggestion_id,
-                "case_date": outcome.case_date,
-                "case_goal_id": outcome.case_goal_id,
-                "recommended_action": candidate.recommended_action,
-                "predicted_outcome_with": float(candidate.predicted_outcome_with),
-                "predicted_outcome_without": float(candidate.predicted_outcome_without),
-                "predicted_outcome_delta": float(
-                    outcome.guardrails.predicted_outcome_delta
-                ),
-                "conformance_deviation": (
-                    None
-                    if candidate.predicted_post_suggestion_fitness is None
-                    else 1.0 - float(candidate.predicted_post_suggestion_fitness)
-                ),
-                "llm_explanation_text": candidate.explanation,
-                "suggested_at": outcome.suggested_at,
-                "scheduler_version": outcome.scheduler_version,
+                "kind": "skipped",
+                "reason": outcome.reason,
+                "detail": outcome.detail,
             }
-        except Exception as exc:  # noqa: BLE001 - RPC contract returns structured errors
-            return {
-                "ok": False,
-                "error": type(exc).__name__,
-                "detail": str(exc),
-            }
+
+        assert isinstance(outcome, ScheduledSuggestion)  # narrow for mypy
+        candidate = outcome.candidate
+        return {
+            "ok": True,
+            "kind": "suggestion",
+            "suggestion_id": outcome.suggestion_id,
+            "case_date": outcome.case_date,
+            "case_goal_id": outcome.case_goal_id,
+            "recommended_action": candidate.recommended_action,
+            "predicted_outcome_with": float(candidate.predicted_outcome_with),
+            "predicted_outcome_without": float(candidate.predicted_outcome_without),
+            "predicted_outcome_delta": float(
+                outcome.guardrails.predicted_outcome_delta
+            ),
+            "conformance_deviation": (
+                None
+                if candidate.predicted_post_suggestion_fitness is None
+                else 1.0 - float(candidate.predicted_post_suggestion_fitness)
+            ),
+            "llm_explanation_text": candidate.explanation,
+            "suggested_at": outcome.suggested_at,
+            "scheduler_version": outcome.scheduler_version,
+        }
 
 
 # ---------------------------------------------------------------------- helpers
