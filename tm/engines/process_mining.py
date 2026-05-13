@@ -59,6 +59,9 @@ __all__ = [
 ]
 
 CaseLens = Literal["workday", "goal_pursuit"]
+RehydrationSource = Literal[
+    "petri_net_data", "originating_window_remine", "replay_log_fallback"
+]
 
 # Activity labels emitted by synthetic agents (e.g., DebriefAgent's summary event)
 # that should be excluded from process-mining analysis by default.
@@ -439,7 +442,7 @@ class ProcessMiner:
             # Rehydrate net+markings from cached PetriNetData; skip the re-mine.
             net, im, fm = petri_net_data_to_pm4py(model.petri_net)
             rehydration_fallback_used = False
-            rehydration_source = "petri_net_data"
+            rehydration_source: RehydrationSource = "petri_net_data"
         else:
             # Fallback path: re-mine from the model's originating window.
             model_meta = model.extractor_metadata or {}
@@ -452,13 +455,12 @@ class ProcessMiner:
                 include_summary_events=include_summary_events,
             )
             rehydration_fallback_used = model_df.empty
+            rehydration_source = "originating_window_remine"
             if rehydration_fallback_used:
                 # No model to rehydrate from — fall back to the replay log so
                 # we at least return a deterministic result instead of crashing.
                 model_df = replay_df
                 rehydration_source = "replay_log_fallback"
-            else:
-                rehydration_source = "originating_window_remine"
             net, im, fm = pm4py.discover_petri_net_inductive(model_df)
 
         replayed = pm4py.conformance_diagnostics_token_based_replay(

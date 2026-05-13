@@ -813,6 +813,11 @@ class TMDaemon:
             process_miner = ProcessMiner(events_repo)
             variant_clusterer = VariantClusterer(events_repo, outcome_aggregator)
 
+            # SchedulerAgent's max_tokens is intentionally not exposed over the
+            # wire (unlike run_debrief): scheduler outputs are bounded by the
+            # one-suggestion-per-call contract, so the agent's internal default
+            # is the right knob. If callers ever need to override it, expose
+            # max_tokens here and mirror the debrief handler's pattern.
             agent_kwargs: dict[str, Any] = {
                 "llm_client": llm,
                 "process_miner": process_miner,
