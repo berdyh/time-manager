@@ -12,12 +12,14 @@ from tm.llm.client import (
     ToolCallResponse,
     Usage,
 )
+from tm.llm.codex_adapter import CodexAdapter
 from tm.llm.cost_meter import CostMeter
 from tm.llm.errors import CostCapExceeded, LLMClientError
 
 __all__ = [
     "AnthropicAdapter",
     "ChatResponse",
+    "CodexAdapter",
     "CostCapExceeded",
     "CostMeter",
     "ExtractResponse",
