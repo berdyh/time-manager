@@ -15,7 +15,6 @@ include write methods, the type-ignore comments in probe.py become unused and
 from __future__ import annotations
 
 import re
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -26,10 +25,14 @@ PROBE_PATH = Path(__file__).parent / "probe.py"
 # Repo root: two levels up from tests/types/
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
-# Skip the whole module if mypy is not available on PATH.
-mypy_bin = shutil.which("mypy")
-if mypy_bin is None:
-    pytest.skip("mypy not found on PATH", allow_module_level=True)
+# Skip the whole module if mypy isn't importable in the running interpreter.
+# We invoke mypy as ``sys.executable -m mypy`` below, so a PATH-based check
+# (e.g. shutil.which("mypy")) over-skips: sandboxed CI may have mypy
+# importable in the venv without exposing the entry-point on PATH.
+try:
+    import mypy  # noqa: F401 — import probe only
+except ImportError:
+    pytest.skip("mypy not importable in this interpreter", allow_module_level=True)
 
 
 def _run_mypy(*extra_args: str, source: Path) -> subprocess.CompletedProcess[str]:
