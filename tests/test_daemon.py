@@ -857,3 +857,66 @@ def test_llm_methods_bypass_write_lock() -> None:
     assert "run_debrief" not in daemon_mod._READ_METHODS
     assert "propose_suggestion" in daemon_mod._LLM_METHODS
     assert "propose_suggestion" not in daemon_mod._READ_METHODS
+
+
+# ---------------------------------------------------------------------------
+# T-PM-DEBRIEF-UNIQUE: daemon RPC envelope renders DuplicateSummary explicitly
+# ---------------------------------------------------------------------------
+
+
+def test_handle_run_debrief_returns_duplicate_summary_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The @_llm_envelope decorator must surface DuplicateSummaryError with a
+    stable wire code (``error="DuplicateSummary"``) rather than letting it
+    fall into the generic ``error=<ClassName>`` branch.
+
+    The race surface: post-/simplify, ``run_debrief`` bypasses ``self._lock``,
+    so two concurrent RPCs for the same case_date can both pass the pre-call
+    SELECT guard inside :class:`DebriefAgent` and then collide at the
+    SUMMARY INSERT, which migration 0010's UNIQUE index converts to a
+    ``sqlite3.IntegrityError``. The agent translates that to
+    :class:`DuplicateSummaryError`; this test asserts the envelope renders
+    the stable wire code so daemon clients (CLI, future bot) can branch on
+    ``"DuplicateSummary"`` without scraping ``detail`` strings.
+    """
+    from tm.agents.debrief_errors import DuplicateSummaryError
+
+    monkeypatch.setenv("TM_LLM_API_KEY", "test-key")
+    db = _prepare_db(tmp_path)
+    daemon = TMDaemon(db_path=db, socket_path=tmp_path / "unused.sock")
+
+    # Stub the DebriefAgent constructor so its extract_and_persist raises
+    # DuplicateSummaryError. We patch where the daemon resolves the symbol
+    # (the deferred local import inside ``_handle_run_debrief``) by
+    # monkey-patching the source module — the local import will pick up
+    # the patched class because import caches the module, not the symbol.
+    from unittest.mock import Mock
+
+    agent_instance = Mock()
+    agent_instance.extract_and_persist.side_effect = DuplicateSummaryError(
+        "2026-05-15",
+        detail="UNIQUE constraint failed: events.case_date",
+    )
+    from tm.agents import debrief as debrief_mod
+
+    monkeypatch.setattr(debrief_mod, "DebriefAgent", Mock(return_value=agent_instance))
+
+    # The factory still needs to return SOMETHING the agent can wire to,
+    # but since we've stubbed DebriefAgent itself it doesn't matter what.
+    llm = Mock()
+    with patch("tm.daemon._build_llm_client", return_value=llm):
+        result = daemon._handle_run_debrief(
+            {
+                "transcript": "Race-window second writer.",
+                "case_date": "2026-05-15",
+            }
+        )
+
+    assert result["ok"] is False
+    assert result["error"] == "DuplicateSummary", result
+    assert result.get("case_date") == "2026-05-15"
+    # The detail must include the underlying UNIQUE-constraint message so
+    # operators can correlate with the migration 0010 invariant.
+    assert "UNIQUE" in result["detail"]

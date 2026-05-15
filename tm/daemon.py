@@ -172,7 +172,24 @@ def _llm_envelope(
     env var is unset, otherwise runs the wrapped handler and converts any
     raised exception to a structured error envelope. The success path passes
     through unchanged (the wrapped handler returns its own success dict).
+
+    Error code table (stable wire contract):
+
+    * ``MissingApiKey``  — TM_LLM_API_KEY env var unset at request time.
+    * ``LLMClientError`` — adapter / SDK failure (rate-limit, network, etc.).
+    * ``DuplicateSummary`` — race-induced single-summary-per-case_date
+      violation surfaced by migration 0010's UNIQUE index. Distinct from
+      the generic ``DuplicateSummaryError`` class-name path so the wire
+      contract has a short, stable code for this case (T-PM-DEBRIEF-UNIQUE).
+    * ``<ExceptionClassName>`` — generic fallback for any other failure;
+      the class name is the wire code and ``detail`` carries ``str(exc)``.
     """
+    # Local import to avoid a load-order cycle (tm.agents transitively
+    # imports tm.repositories which is already imported above; the import
+    # is cheap but keeping it scoped to the wrapper makes the dependency
+    # explicit and matches the per-call import pattern used in the
+    # debrief / scheduler handlers themselves).
+    from tm.agents.debrief_errors import DuplicateSummaryError
 
     @functools.wraps(fn)
     def wrapped(self: TMDaemon, params: dict[str, Any]) -> dict[str, Any]:
@@ -186,6 +203,17 @@ def _llm_envelope(
             return fn(self, params)
         except LLMClientError as exc:
             return {"ok": False, "error": "LLMClientError", "detail": str(exc)}
+        except DuplicateSummaryError as exc:
+            # Explicit, stable wire code for the race-induced single-summary
+            # collision. We also surface ``case_date`` so clients can render
+            # the same friendly message the CLI does without re-parsing the
+            # ``detail`` string.
+            return {
+                "ok": False,
+                "error": "DuplicateSummary",
+                "detail": str(exc),
+                "case_date": exc.case_date,
+            }
         except Exception as exc:  # noqa: BLE001 — RPC contract returns structured errors
             return {"ok": False, "error": type(exc).__name__, "detail": str(exc)}
 

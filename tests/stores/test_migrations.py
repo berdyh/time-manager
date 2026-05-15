@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import re
+import shutil
+import sqlite3
 from collections.abc import Callable
 from pathlib import Path
 
@@ -17,6 +19,8 @@ from tm.store import (
     Store,
 )
 from tm.stores.sqlite_store import _parse_migration_header
+
+REPO_MIGRATIONS_DIR = Path(__file__).resolve().parents[2] / "migrations"
 
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
@@ -626,3 +630,177 @@ def test_pragma_errors_NOT_wrapped_as_MigrationBodyError(
             "MigrationBodyError must not be raised for pragma validation errors"
         ) from None
     s.close()
+
+
+# ---------------------------------------------------------------------------
+# T-PM-DEBRIEF-UNIQUE: migration 0010 partial UNIQUE index on debrief_summary
+# ---------------------------------------------------------------------------
+
+
+def _copy_migrations_up_to(src_dir: Path, dst_dir: Path, *, max_version: int) -> None:
+    """Copy migrations from ``src_dir`` into ``dst_dir`` up to ``max_version``.
+
+    Used by 0010-specific tests so we can apply 0001..0009 first, seed
+    pre-existing duplicates that violate the single-summary invariant, then
+    add 0010 and re-apply to verify the migration cleans them.
+    """
+    dst_dir.mkdir(parents=True, exist_ok=True)
+    for entry in sorted(src_dir.iterdir()):
+        m = re.match(r"^(\d{4})_[A-Za-z0-9_\-]+\.sql$", entry.name)
+        if not m:
+            continue
+        if int(m.group(1)) > max_version:
+            continue
+        shutil.copy2(entry, dst_dir / entry.name)
+
+
+def test_0010_drops_duplicates_and_enforces_unique_index_on_debrief_summary(
+    tmp_path: Path,
+) -> None:
+    """T-PM-DEBRIEF-UNIQUE: migration 0010 pre-cleans duplicate summaries.
+
+    Setup: apply migrations 0001..0009, seed two ``debrief_summary`` rows
+    for the same ``case_date`` (the pre-/simplify pathological state),
+    then apply migration 0010. After 0010:
+
+    * Exactly one row remains for that case_date (the MAX(event_id) row
+      survives — event_id is a ULID so MAX picks the most-recent insert).
+    * A second INSERT for the same case_date raises
+      :class:`sqlite3.IntegrityError` because the partial UNIQUE index
+      ``uq_events_summary_per_case_date`` is in place.
+    * An INSERT for a *different* case_date still succeeds (sanity that
+      the index is scoped per case_date, not global to the activity).
+    """
+    mdir = tmp_path / "migrations"
+    _copy_migrations_up_to(REPO_MIGRATIONS_DIR, mdir, max_version=9)
+
+    db = tmp_path / "tm.db"
+    s = Store(db, migrations_dir=mdir)
+    s.apply_pending_migrations()
+    s.close()
+
+    # Seed two duplicates for 2026-05-15 and one duplicate-free row for
+    # 2026-05-16 so we can assert the cleanup is scoped per case_date.
+    # event_id values are ULID-shaped strings; '01H...' < '02H...' so the
+    # second insert has the larger event_id and should survive.
+    conn = sqlite3.connect(db)
+    try:
+        conn.executemany(
+            "INSERT INTO events ("
+            "event_id, case_id, activity, timestamp, lifecycle, "
+            "extractor_version, case_date"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [
+                (
+                    "01H_FIRST_DUPLICATE_____________",
+                    "c-2026-05-15",
+                    "debrief_summary",
+                    "2026-05-15T10:00:00Z",
+                    "complete",
+                    "test",
+                    "2026-05-15",
+                ),
+                (
+                    "02H_SECOND_DUPLICATE____________",
+                    "c-2026-05-15",
+                    "debrief_summary",
+                    "2026-05-15T11:00:00Z",
+                    "complete",
+                    "test",
+                    "2026-05-15",
+                ),
+                (
+                    "03H_OTHER_DATE_SUMMARY__________",
+                    "c-2026-05-16",
+                    "debrief_summary",
+                    "2026-05-16T23:59:59Z",
+                    "complete",
+                    "test",
+                    "2026-05-16",
+                ),
+            ],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    # Now add migration 0010 and re-apply.
+    shutil.copy2(
+        REPO_MIGRATIONS_DIR / "0010_debrief_summary_uniqueness.sql",
+        mdir / "0010_debrief_summary_uniqueness.sql",
+    )
+    s2 = Store(db, migrations_dir=mdir)
+    applied = s2.apply_pending_migrations()
+    s2.close()
+    assert 10 in applied, f"expected migration 10 to apply this round, got {applied}"
+
+    # Verify pre-clean: exactly one summary for 2026-05-15, and it's the
+    # MAX(event_id) row.
+    conn = sqlite3.connect(db)
+    try:
+        rows = conn.execute(
+            "SELECT event_id FROM events "
+            "WHERE activity = 'debrief_summary' AND case_date = '2026-05-15'"
+        ).fetchall()
+        assert len(rows) == 1, (
+            f"expected exactly one surviving debrief_summary for 2026-05-15, "
+            f"got {rows!r}"
+        )
+        assert rows[0][0] == "02H_SECOND_DUPLICATE____________", (
+            f"expected MAX(event_id) row to survive, got {rows[0][0]!r}"
+        )
+
+        # Verify the unrelated 2026-05-16 row is untouched.
+        rows_other = conn.execute(
+            "SELECT event_id FROM events "
+            "WHERE activity = 'debrief_summary' AND case_date = '2026-05-16'"
+        ).fetchall()
+        assert len(rows_other) == 1
+
+        # Verify the UNIQUE constraint blocks a fresh duplicate INSERT.
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO events ("
+                "event_id, case_id, activity, timestamp, lifecycle, "
+                "extractor_version, case_date"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    "04H_RACE_INSERT_________________",
+                    "c-2026-05-15",
+                    "debrief_summary",
+                    "2026-05-15T12:00:00Z",
+                    "complete",
+                    "test",
+                    "2026-05-15",
+                ),
+            )
+        # Rollback the failed statement so the connection is clean.
+        conn.rollback()
+
+        # And the index does exist by name in sqlite_master.
+        idx_row = conn.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type='index' AND name='uq_events_summary_per_case_date'"
+        ).fetchone()
+        assert idx_row is not None, "uq_events_summary_per_case_date index missing"
+
+        # Sanity: a NON-summary event with the same case_date is unaffected
+        # (the partial WHERE clause is what makes the index scoped).
+        conn.execute(
+            "INSERT INTO events ("
+            "event_id, case_id, activity, timestamp, lifecycle, "
+            "extractor_version, case_date"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                "05H_NON_SUMMARY_EVENT___________",
+                "c-2026-05-15",
+                "deep_work",
+                "2026-05-15T09:00:00Z",
+                "complete",
+                "test",
+                "2026-05-15",
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()

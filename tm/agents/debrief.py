@@ -46,6 +46,7 @@ that up.
 
 from __future__ import annotations
 
+import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -54,6 +55,7 @@ from tm.agents.debrief_errors import (
     DebriefGoalLookupError,
     DebriefTimestampError,
     DebriefValidationError,
+    DuplicateSummaryError,
 )
 from tm.llm.client import ExtractResponse, Message
 from tm.llm.cost_meter import estimate_cost_usd
@@ -73,6 +75,7 @@ __all__ = [
     "SYSTEM_PROMPT",
     "DebriefAgent",
     "DebriefResult",
+    "DuplicateSummaryError",
     "ExtractedEvent",
 ]
 
@@ -471,24 +474,48 @@ class DebriefAgent:
         # Re-check just before insert — ``_guard_existing_summary`` runs
         # at the top, but a parallel writer could in principle have
         # raced us. Safe to re-query; it's a single SQL row read.
+        #
+        # The SELECT-then-INSERT pair is NOT atomic across processes, so a
+        # concurrent writer can still slip in between the check and the
+        # insert (post-/simplify the daemon's coarse write lock no longer
+        # serialises LLM-backed handlers). Migration 0010 installs a
+        # partial UNIQUE index on (case_date) WHERE activity='debrief_summary'
+        # that catches the race; we translate the resulting IntegrityError
+        # into a typed :class:`DuplicateSummaryError` so callers (CLI, daemon
+        # RPC envelope) can render an actionable message rather than a
+        # generic "internal error".
         if not _summary_exists_for_case_date(self._events, resolved_case_date):
             summary_ts = f"{resolved_case_date}T23:59:59Z"
-            self._events.append_event(
-                event_id=ulid(),
-                case_id=resolved_case_date,
-                activity=SUMMARY_ACTIVITY,
-                timestamp=summary_ts,
-                lifecycle="complete",
-                resource=None,
-                attributes={
-                    "planned_tasks_completed": int(summary["planned_tasks_completed"]),
-                    "planned_tasks_total": int(summary["planned_tasks_total"]),
-                },
-                extractor_version=EXTRACTOR_VERSION,
-                advances_goal=None,
-                case_date=resolved_case_date,
-                schema_version="v1",
-            )
+            try:
+                self._events.append_event(
+                    event_id=ulid(),
+                    case_id=resolved_case_date,
+                    activity=SUMMARY_ACTIVITY,
+                    timestamp=summary_ts,
+                    lifecycle="complete",
+                    resource=None,
+                    attributes={
+                        "planned_tasks_completed": int(
+                            summary["planned_tasks_completed"]
+                        ),
+                        "planned_tasks_total": int(summary["planned_tasks_total"]),
+                    },
+                    extractor_version=EXTRACTOR_VERSION,
+                    advances_goal=None,
+                    case_date=resolved_case_date,
+                    schema_version="v1",
+                )
+            except sqlite3.IntegrityError as exc:
+                # Race won by another writer (or pre-existing duplicate
+                # snuck past migration 0010 somehow). The UNIQUE index on
+                # (case_date) WHERE activity='debrief_summary' is what
+                # makes this branch reachable; surface a typed error so
+                # callers can render a friendly message instead of a
+                # generic internal-error / 5xx-style failure.
+                raise DuplicateSummaryError(
+                    case_date=resolved_case_date,
+                    detail=str(exc),
+                ) from exc
             summary_event_persisted = True
             events_persisted += 1
 

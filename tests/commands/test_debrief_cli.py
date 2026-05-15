@@ -201,3 +201,57 @@ def test_debrief_cli_renders_summary(tmp_path: Path, monkeypatch) -> None:
     )
     assert "Cost (estimated): $" in result.output
     assert "Cost (actual): $" in result.output
+
+
+# ---------------------------------------------------------------------------
+# T-PM-DEBRIEF-UNIQUE: friendly CLI rendering on race-induced duplicate
+# ---------------------------------------------------------------------------
+
+
+def test_debrief_cli_renders_friendly_message_on_duplicate_summary(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The CLI must convert DuplicateSummaryError into a friendly exit-1 message.
+
+    DuplicateSummaryError fires when migration 0010's partial UNIQUE index
+    rejects a race-induced second debrief_summary INSERT for the same
+    case_date (post-/simplify the daemon's coarse write lock no longer
+    serialises LLM-backed handlers, so two concurrent ``run_debrief``
+    invocations can both pass the pre-call SELECT and collide at INSERT).
+
+    Operator-facing UX: print "Debrief skipped: a summary already exists
+    for case_date=YYYY-MM-DD..." and exit 1 — not a traceback, not exit 0.
+    """
+    from tm.agents.debrief import DuplicateSummaryError
+    from tm.commands import debrief as debrief_cmd
+
+    monkeypatch.setenv("TM_LLM_API_KEY", "test-key")
+    db = _db(tmp_path)
+    transcript = tmp_path / "transcript.txt"
+    transcript.write_text("I finished deep work.", encoding="utf-8")
+
+    raising_agent = Mock()
+    raising_agent.extract_and_persist.side_effect = DuplicateSummaryError(
+        "2026-05-15",
+        detail="UNIQUE constraint failed: events.case_date",
+    )
+
+    with (
+        patch.object(debrief_cmd, "AnthropicAdapter", return_value=Mock()),
+        patch.object(debrief_cmd, "DebriefAgent", return_value=raising_agent),
+    ):
+        result = _invoke_debrief(
+            "--case-date",
+            "2026-05-15",
+            "--transcript-file",
+            str(transcript),
+            db_path=db,
+        )
+
+    assert result.exit_code == 1, result.output
+    # Friendly message mentions the case_date so the operator can act on it.
+    assert "Debrief skipped" in result.output
+    assert "case_date=2026-05-15" in result.output
+    # And does NOT leak a raw traceback / class name.
+    assert "Traceback" not in result.output
+    assert "DuplicateSummaryError" not in result.output

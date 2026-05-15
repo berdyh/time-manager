@@ -8,7 +8,7 @@ from typing import Annotated
 import typer
 
 from tm._paths import default_db_path
-from tm.agents.debrief import DebriefAgent, DebriefResult
+from tm.agents.debrief import DebriefAgent, DebriefResult, DuplicateSummaryError
 from tm.commands._shared import (
     DbPathOption,
     ensure_migrations,
@@ -146,8 +146,24 @@ def debrief(
         model=model,
         max_tokens=max_tokens,
     )
-    result = agent.extract_and_persist(
-        transcript=transcript,
-        case_date=resolved_case_date,
-    )
+    try:
+        result = agent.extract_and_persist(
+            transcript=transcript,
+            case_date=resolved_case_date,
+        )
+    except DuplicateSummaryError as exc:
+        # Race-induced single-summary collision (post-/simplify the daemon's
+        # coarse write lock no longer serialises LLM-backed handlers, so two
+        # concurrent ``run_debrief`` RPCs for the same case_date can both
+        # pass the pre-call SELECT and then collide at INSERT — caught by
+        # the partial UNIQUE index added in migration 0010). The CLI is the
+        # operator boundary: render a friendly message and exit 1 rather
+        # than let the exception traceback through.
+        typer.echo(
+            f"Debrief skipped: a summary already exists for "
+            f"case_date={exc.case_date}. Use 'tm reextract' (v1.1) to "
+            f"replace it, or remove the existing summary manually.",
+            err=True,
+        )
+        raise typer.Exit(1) from exc
     _render_result(result)

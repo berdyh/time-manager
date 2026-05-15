@@ -28,6 +28,7 @@ from tm.agents.debrief_errors import (
     DebriefGoalLookupError,
     DebriefTimestampError,
     DebriefValidationError,
+    DuplicateSummaryError,
 )
 from tm.agents.scheduler import (
     CANDIDATE_SCHEMA,
@@ -63,6 +64,7 @@ __all__ = [
     "DebriefResult",
     "DebriefTimestampError",
     "DebriefValidationError",
+    "DuplicateSummaryError",
     "ExtractedEvent",
     "ScheduledSuggestion",
     "SchedulerAgent",

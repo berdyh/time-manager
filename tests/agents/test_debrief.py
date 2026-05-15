@@ -30,6 +30,7 @@ from tm.agents import (
     DebriefResult,
     DebriefTimestampError,
     DebriefValidationError,
+    DuplicateSummaryError,
     ExtractedEvent,
 )
 from tm.llm.client import ExtractResponse, Usage
@@ -1452,3 +1453,95 @@ def test_transcript_without_closing_tag_unchanged_in_wrapper(
     assert transcript in user_content
     assert "<user_message>" in user_content
     assert "</user_message>" in user_content
+
+
+# ---------------------------------------------------------------------------
+# T-PM-DEBRIEF-UNIQUE: race-induced INSERT-time collision → DuplicateSummaryError
+# ---------------------------------------------------------------------------
+
+
+def test_extract_and_persist_raises_duplicate_summary_error_on_second_write(
+    monkeypatch: pytest.MonkeyPatch,
+    vocab_repo: VocabularyRepository,
+    goals_repo: GoalsRepository,
+    events_repo: EventsRepository,
+    cost_meter: CostMeter,
+) -> None:
+    """Race-induced single-summary collision surfaces as DuplicateSummaryError.
+
+    Setup mirrors the daemon race window post-/simplify:
+
+    1. A summary event already exists in the DB for case_date=2026-05-15
+       (inserted directly via the events repo — simulates "another writer
+       beat us" between our pre-call SELECT and our INSERT).
+    2. We monkey-patch :func:`tm.agents.debrief._summary_exists_for_case_date`
+       to lie (return False both times) so the agent's pre-call guard and
+       pre-INSERT re-check pass even though a row exists. This is the
+       cleanest way to drive the path past both SELECT-time checks and
+       force the UNIQUE-index collision at INSERT time — without this
+       patch the agent would raise :class:`DebriefValidationError` from
+       the pre-call guard, which is a different code path.
+    3. The agent now attempts to INSERT a second debrief_summary row for
+       the same case_date. Migration 0010's UNIQUE index makes that fail
+       with :class:`sqlite3.IntegrityError`, which the agent must translate
+       to :class:`DuplicateSummaryError` carrying ``case_date``.
+    """
+    target_case_date = "2026-05-15"
+
+    # Step 1: seed a pre-existing summary for the target case_date.
+    events_repo.append_event(
+        event_id="01H_PRE_EXISTING_SUMMARY________",
+        case_id=target_case_date,
+        activity=SUMMARY_ACTIVITY,
+        timestamp=f"{target_case_date}T23:59:59Z",
+        lifecycle="complete",
+        attributes={"planned_tasks_completed": 7, "planned_tasks_total": 9},
+        extractor_version="v0",
+        case_date=target_case_date,
+        schema_version="v1",
+    )
+
+    # Step 2: patch the SELECT-time guard to lie, so the agent walks past
+    # both pre-call and pre-INSERT checks and hits the INSERT.
+    from tm.agents import debrief as debrief_mod
+
+    monkeypatch.setattr(
+        debrief_mod,
+        "_summary_exists_for_case_date",
+        lambda *_args, **_kwargs: False,
+    )
+
+    # Step 3: drive extract_and_persist with a minimal extract response
+    # (zero events; just the summary).
+    extract = _canned_extract(
+        events=[],
+        summary={"planned_tasks_completed": 3, "planned_tasks_total": 8},
+    )
+    agent, _, _ = _make_agent(
+        vocab_repo=vocab_repo,
+        goals_repo=goals_repo,
+        events_repo=events_repo,
+        cost_meter=cost_meter,
+        extract_return=extract,
+    )
+
+    with pytest.raises(DuplicateSummaryError) as ei:
+        agent.extract_and_persist("Second writer", case_date=target_case_date)
+
+    err = ei.value
+    assert err.case_date == target_case_date
+    # The detail string should include the SQLite UNIQUE constraint message
+    # so operators can see the underlying cause without chasing __cause__.
+    assert err.detail is not None
+    assert "UNIQUE" in err.detail
+    # And the chained cause must be the original sqlite3.IntegrityError.
+    import sqlite3 as _sqlite3
+
+    assert isinstance(err.__cause__, _sqlite3.IntegrityError)
+
+    # Sanity: still exactly one summary row in the DB (the pre-existing one).
+    rows = events_repo.query_events(
+        case_date=target_case_date, activity=SUMMARY_ACTIVITY
+    )
+    assert len(rows) == 1
+    assert rows[0]["event_id"] == "01H_PRE_EXISTING_SUMMARY________"
