@@ -178,9 +178,19 @@ start reading from the events log.
 - `TM_DB`, path to the SQLite database. Default:
   `~/.local/share/tm/tm.db`.
 - `TM_LLM_API_KEY`, Anthropic API key. Required for debrief extraction and
-  scheduler suggestions.
-- `TM_LLM_BACKEND`, backend selector from the design. v1 effectively supports
-  only `anthropic`, which is the default backend.
+  scheduler suggestions when using the `anthropic` or `claude-code` backends.
+  The `claude-code` backend mirrors this into `ANTHROPIC_API_KEY` for the
+  child subprocess only. The `codex` backend ignores this variable and uses
+  whatever credentials `codex login` configured.
+- `TM_LLM_BACKEND`, backend selector. One of:
+  - `anthropic` (default): direct Anthropic SDK; reads `TM_LLM_API_KEY`.
+  - `codex`: subprocess to the OpenAI Codex CLI (`codex exec --json`); uses
+    `codex login` credentials.
+  - `claude-code`: subprocess to the Claude Code CLI
+    (`claude --bare --print --output-format json`); reads `TM_LLM_API_KEY`
+    (bridged to `ANTHROPIC_API_KEY` for the subprocess).
+  Unset or empty falls back to `anthropic`. An invalid value fails fast with
+  a clear error listing the valid set.
 - `TM_LLM_MONTHLY_CAP_USD`, soft cap on monthly LLM spend. Default: `$20`.
 - `TM_MAX_PROACTIVE_SUGGESTIONS_PER_DAY`, scheduler rate limit. Default: `1`.
 - `TM_SOCKET`, daemon Unix-socket path. Default:

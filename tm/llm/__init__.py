@@ -16,8 +16,11 @@ from tm.llm.client import (
 from tm.llm.codex_adapter import CodexAdapter
 from tm.llm.cost_meter import CostMeter
 from tm.llm.errors import CostCapExceeded, LLMClientError
+from tm.llm.factory import BACKEND_ENV, VALID_BACKENDS, build_llm_client
 
 __all__ = [
+    "BACKEND_ENV",
+    "VALID_BACKENDS",
     "AnthropicAdapter",
     "ChatResponse",
     "ClaudeCodeAdapter",
@@ -31,4 +34,5 @@ __all__ = [
     "ToolCall",
     "ToolCallResponse",
     "Usage",
+    "build_llm_client",
 ]

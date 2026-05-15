@@ -81,7 +81,7 @@ def test_suggest_cli_returns_suggestion(tmp_path: Path, monkeypatch) -> None:
 
     from tm.commands import suggest as suggest_cmd
 
-    with patch.object(suggest_cmd, "AnthropicAdapter", return_value=llm):
+    with patch.object(suggest_cmd, "build_llm_client", return_value=llm):
         result = _invoke_suggest("--case-date", "2026-05-06", db_path=db)
 
     assert result.exit_code == 0, result.output
@@ -101,7 +101,7 @@ def test_suggest_cli_returns_skip_reason(tmp_path: Path, monkeypatch) -> None:
 
     from tm.commands import suggest as suggest_cmd
 
-    with patch.object(suggest_cmd, "AnthropicAdapter", return_value=llm):
+    with patch.object(suggest_cmd, "build_llm_client", return_value=llm):
         result = _invoke_suggest("--case-date", "2026-05-06", db_path=db)
 
     assert result.exit_code == 0, result.output
@@ -129,7 +129,7 @@ def test_suggest_cli_with_goal_id(tmp_path: Path, monkeypatch) -> None:
 
     from tm.commands import suggest as suggest_cmd
 
-    with patch.object(suggest_cmd, "AnthropicAdapter", return_value=llm):
+    with patch.object(suggest_cmd, "build_llm_client", return_value=llm):
         result = _invoke_suggest(
             "--case-date",
             "2026-05-06",

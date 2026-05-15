@@ -18,9 +18,9 @@ from tm.commands._shared import (
 from tm.llm.anthropic_adapter import (
     DEFAULT_MAX_TOKENS,
     DEFAULT_MODEL,
-    AnthropicAdapter,
 )
 from tm.llm.cost_meter import CostMeter
+from tm.llm.factory import build_llm_client
 from tm.repositories.events import EventsRepository
 from tm.repositories.goals import GoalsRepository
 from tm.repositories.vocabulary import VocabularyRepository
@@ -135,7 +135,7 @@ def debrief(
     resolved_case_date = case_date or utc_today()
 
     ensure_migrations(resolved_db_path)
-    llm = AnthropicAdapter(model=model, max_tokens=max_tokens)
+    llm = build_llm_client(model=model, max_tokens=max_tokens)
     vocab_repo = VocabularyRepository(resolved_db_path)
     agent = DebriefAgent(
         llm_client=llm,

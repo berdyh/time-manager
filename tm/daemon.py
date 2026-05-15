@@ -89,10 +89,11 @@ from typing import Any
 from tm._paths import default_data_dir
 from tm.engines.process_mining import ProcessMiner
 from tm.engines.variant_cluster import VariantClusterer
-from tm.llm.anthropic_adapter import ANTHROPIC_API_KEY_ENV, AnthropicAdapter
+from tm.llm.anthropic_adapter import ANTHROPIC_API_KEY_ENV
 from tm.llm.client import LLMClient
 from tm.llm.cost_meter import CostMeter
 from tm.llm.errors import CostCapExceeded, LLMClientError
+from tm.llm.factory import build_llm_client
 from tm.models.outcome import OutcomeAggregator
 from tm.repositories.events import EventsRepository
 from tm.repositories.goals import GoalsRepository
@@ -156,11 +157,15 @@ _LLM_METHODS = frozenset({"run_debrief", "propose_suggestion"})
 def _build_llm_client(model: str, max_tokens: int) -> LLMClient:
     """Construct the LLMClient used by the daemon's LLM-backed handlers.
 
-    Tests patch this factory (rather than ``AnthropicAdapter`` directly) to
+    Tests patch this factory (rather than the underlying adapter directly) to
     inject a mock LLMClient without spending real API tokens. The factory is
     a module-level function so ``unittest.mock.patch`` resolves it cleanly.
+
+    Delegates to :func:`tm.llm.factory.build_llm_client`, which reads
+    ``TM_LLM_BACKEND`` to select between AnthropicAdapter, CodexAdapter,
+    and ClaudeCodeAdapter.
     """
-    return AnthropicAdapter(model=model, max_tokens=max_tokens)
+    return build_llm_client(model=model, max_tokens=max_tokens)
 
 
 def _llm_envelope(

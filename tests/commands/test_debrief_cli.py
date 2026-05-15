@@ -81,7 +81,7 @@ def test_debrief_cli_with_transcript_file(tmp_path: Path, monkeypatch) -> None:
 
     from tm.commands import debrief as debrief_cmd
 
-    with patch.object(debrief_cmd, "AnthropicAdapter", return_value=llm):
+    with patch.object(debrief_cmd, "build_llm_client", return_value=llm):
         result = _invoke_debrief(
             "--case-date",
             "2026-05-06",
@@ -104,7 +104,7 @@ def test_debrief_cli_with_stdin(tmp_path: Path, monkeypatch) -> None:
 
     from tm.commands import debrief as debrief_cmd
 
-    with patch.object(debrief_cmd, "AnthropicAdapter", return_value=llm):
+    with patch.object(debrief_cmd, "build_llm_client", return_value=llm):
         result = _invoke_debrief(
             "--case-date",
             "2026-05-06",
@@ -184,7 +184,7 @@ def test_debrief_cli_renders_summary(tmp_path: Path, monkeypatch) -> None:
 
     from tm.commands import debrief as debrief_cmd
 
-    with patch.object(debrief_cmd, "AnthropicAdapter", return_value=llm):
+    with patch.object(debrief_cmd, "build_llm_client", return_value=llm):
         result = _invoke_debrief(
             "--case-date",
             "2026-05-06",
@@ -237,7 +237,7 @@ def test_debrief_cli_renders_friendly_message_on_duplicate_summary(
     )
 
     with (
-        patch.object(debrief_cmd, "AnthropicAdapter", return_value=Mock()),
+        patch.object(debrief_cmd, "build_llm_client", return_value=Mock()),
         patch.object(debrief_cmd, "DebriefAgent", return_value=raising_agent),
     ):
         result = _invoke_debrief(
