@@ -39,9 +39,11 @@ labeling, and live-LLM eval calibration.
 The current release surface includes:
 
 - CLI subcommands for init, goals, vocabulary review/list/drift, daemon, process
-  mining discovery, bottlenecks, variants, debrief, and suggest.
-- Ten migrations, including `0010_debrief_summary_uniqueness.sql` for the
-  duplicate debrief-summary race.
+  mining discovery, bottlenecks, variants, debrief, suggest, capture,
+  dashboard, export, backup, privacy, reextract, and encryption status.
+- Eleven migrations, including `0010_debrief_summary_uniqueness.sql` for the
+  duplicate debrief-summary race and `0011_capture_transcripts_privacy.sql`
+  for transcript retention and privacy audit rows.
 - Three LLM backends through `TM_LLM_BACKEND`: `anthropic`, `codex`, and
   `claude-code`.
 - Daemon RPC handlers for Kuzu projection, debrief, and suggestion generation.
@@ -49,9 +51,9 @@ The current release surface includes:
   re-mining only when needed.
 - First-user CLI path documented in the README and v1 release doc.
 
-This means the release is implementation-complete for the CLI-first v1, not for
-the older full plan that included Telegram, encrypted backups, redaction, and a
-daily metrics surface.
+This means the release is implementation-complete for the CLI-first v1.1 local
+operator surface. Live integrations such as Telegram bot polling, CalDAV sync,
+and audio transcription remain outside this branch.
 
 ## Plan-Vs-Implementation Matrix
 
@@ -66,17 +68,17 @@ daily metrics surface.
 | LLM backend selector | shipped with three backends | `tm/llm/factory.py` validates `anthropic`, `codex`, `claude-code` | update old "four backends" plan language before treating it as current |
 | OpenAI direct backend | not shipped | absent from `VALID_BACKENDS` | backlog, not v1 |
 | Ollama/OpenCode/Gemini adapters | not shipped | TODO/release follow-up only | backlog |
-| Telegram bot | not shipped | `tm/daemon.py` explicitly says no Telegram bot integration | v2/backlog |
-| Bot whitelist/auth model | not shipped | no bot surface | stale v1 plan promise |
-| SQLCipher/keyring encryption | not shipped | `tm/daemon.py` says no SQLCipher/keyring beyond `tm.resilience` stub | stale v1 plan promise |
-| Daily encrypted backup and `tm export` | not shipped | no command/importable export surface found in release public surface | backlog if still desired |
-| `tm metrics` | not shipped | not registered in `tm/cli.py` | stale v1 plan promise |
-| `tm forget` / `tm redact` | not shipped | no command surface in `tm/cli.py` | backlog if privacy scope is re-opened |
+| Telegram capture | shipped as local import | `tm capture telegram` imports Telegram JSON exports | live bot remains v2/backlog |
+| Bot whitelist/auth model | not shipped | no live bot surface | stale v1 plan promise |
+| SQLCipher/keyring encryption | shipped as optional connection/key support | `tm/security.py`, `tm encryption status`, `TM_SQLCIPHER_KEY`, keyring opt-in | requires SQLCipher-enabled driver |
+| Daily backup and `tm export` | shipped | `tm export`, `tm backup` | encrypted backup depends on SQLCipher-enabled driver |
+| Dashboard metrics | shipped | `tm dashboard` | keep local and compact |
+| `tm forget` / `tm redact` | shipped | `tm privacy forget`, `tm privacy redact` | keep audit rows in `privacy_actions` |
 | First-run guided setup with framing questions | not shipped | `tm init` applies migrations and seeds starter vocabulary | stale v1 plan promise |
 | Pattern confidence/decay engine | not shipped as a named surface | no current release surface beyond scheduler telemetry and variants | validate before reviving |
-| Daemon proper daemonization | open | `tm/commands/daemon.py` supports foreground mode only | Tier S decision |
-| Variant trend/drift labeling | open | variants are grouped across the requested window and labeled by mean outcome; no trend layer explains label movement across windows | Tier S decision |
-| Live-LLM eval threshold calibration | open | eval harness has live mode, thresholds still mock-calibrated | Tier S decision |
+| Daemon proper daemonization | shipped | `tm daemon start --no-foreground` double-forks on POSIX | keep foreground default for supervisors |
+| Variant trend/drift labeling | shipped | `tm variants --trend --since ... --until ...` compares against the previous equal-size window | explicit windows only |
+| Live-LLM eval threshold calibration | partially shipped | eval harness now has separate live thresholds; no API key was available to rerun live calibration in this branch | refresh with real eval repo |
 | Lock-during-LLM concurrency carry-forward | closed in code and docs | `tm/daemon.py` classifies LLM handlers outside `self._lock`; release doc and README now mark it closed | keep closed unless new concurrency evidence appears |
 
 ## CEO Review
@@ -99,9 +101,11 @@ Concerns:
 - The promoted plan still reads like the broader v1 scope shipped. It did not.
   That is fine if the source of truth is the release doc, but dangerous if a
   future worker starts from the plan and reopens stale promises.
-- Telegram, SQLCipher, backups/export, metrics, redact/forget, and first-run
-  guided setup are still valuable product ideas, but none should be implied as
-  current v1.
+- This CEO review section is historical. After the local-operator branch,
+  SQLCipher/keyring support, backups/export, dashboard metrics, and
+  redact/forget are shipped as local CLI surfaces; Telegram bot/webhook,
+  owned voice transcription, CalDAV sync, and first-run guided setup remain
+  future product work.
 - The biggest strategic question is not "what can be built next"; it is whether
   the CLI loop is producing real daily value before adding passive capture or
   bot surfaces.
@@ -128,8 +132,8 @@ Concerns:
   this reconciliation refreshed README to match `tm/daemon.py` and the v1
   release doc.
 - `docs/release/v1.md` previously had stale aggregate counts in the body; this
-  reconciliation refreshed them to the verified 650 passed + 1 skipped, mypy
-  clean over 50 source files, and ruff format clean over 106 files.
+  reconciliation refreshed them to the verified 711 passed + 1 skipped, mypy
+  clean over 58 source files, and ruff format clean over 117 files.
 - Subprocess LLM adapters duplicate enough scaffolding that adding more
   adapters should first extract shared helpers.
 
@@ -247,10 +251,10 @@ Completed on 2026-06-16 and reverified on 2026-06-17:
 | Check | Result | Notes |
 |---|---|---|
 | `git status --short --branch --untracked-files=all` | tracked docs changed plus local untracked docs/state remain | Expected in this work-in-progress pass: `README.md`, `docs/release/v1.md`, and `docs/release/process_mining.md` are modified; this artifact, TODOs, notes, temporal plan, transcripts, `.claude/`, and `uv.lock` are still local/untracked. |
-| `.venv/bin/pytest -q` | 650 passed, 1 skipped | Reverified on 2026-06-17 with 1 pytest-asyncio deprecation warning. |
-| `.venv/bin/mypy tm` | no issues in 50 source files | Clean. |
+| `.venv/bin/pytest -q` | 711 passed, 1 skipped | Reverified on 2026-06-18 with 1 pytest-asyncio deprecation warning. |
+| `.venv/bin/mypy tm` | no issues in 58 source files | Clean. |
 | `.venv/bin/ruff check .` | all checks passed | Clean. |
-| `.venv/bin/ruff format --check .` | 106 files already formatted | Clean. |
+| `.venv/bin/ruff format --check .` | 117 files already formatted | Clean. |
 | `.venv/bin/tm --help` | exit 0 | Reverified on 2026-06-17. |
 | `.venv/bin/tm debrief --help` | exit 0 | Reverified on 2026-06-17. |
 | `.venv/bin/tm suggest --help` | exit 0 | Reverified on 2026-06-17. |
@@ -262,13 +266,12 @@ Docs corrected during this pass:
 - README "Known Limitations" now marks the daemon LLM-handler lock issue as
   closed and points at migration 0010 for the duplicate-summary race guard.
 - `docs/release/v1.md` now uses the verified aggregate counts consistently:
-  650 passed + 1 skipped, 50 mypy-checked source files, and 106
+  711 passed + 1 skipped, 58 mypy-checked source files, and 117
   ruff-formatted files.
 - README environment docs now state the current shared `TM_LLM_API_KEY` guard
   for all LLM-backed CLI/daemon requests before backend selection, including
   the `codex` backend's separate `codex login` credentials.
 - `docs/release/process_mining.md` now labels its 394 passed + 1 skipped suite
   count as promotion-time evidence instead of the current aggregate total.
-- `docs/release/v1.md` now labels the CLI surface as 9 entries under `tm`,
-  matching the current 8 `add_typer(...)` registrations plus standalone
-  `tm init`.
+- `docs/release/v1.md` and README now label the CLI surface as 16 entries
+  under `tm`: 15 sub-typers plus standalone `tm init`.

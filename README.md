@@ -60,7 +60,7 @@ starter vocabulary:
 
 ```text
 tm init: db=/home/you/.local/share/tm/tm.db
-  applied 10 migrations
+  applied 11 migrations
   seeded 16 starter activities
   seeded 5 starter aliases
 ```
@@ -90,9 +90,10 @@ tm debrief --transcript-file today.txt --case-date 2026-05-06
 ```
 
 `tm debrief` reads a transcript from `--transcript-file PATH` or `--from-stdin`,
-calls `DebriefAgent.extract_and_persist`, and persists structured events. It
-prints `events_persisted`, novel labels, summary counts, and estimated +
-actual cost. `TM_LLM_API_KEY` must be set.
+retains the transcript for `tm reextract`, calls
+`DebriefAgent.extract_and_persist`, and persists structured events. It prints
+`events_persisted`, novel labels, summary counts, and estimated + actual cost.
+`TM_LLM_API_KEY` must be set.
 
 The full pipeline is:
 
@@ -167,9 +168,24 @@ start reading from the events log.
   `rebuild_kuzu_projection` as RPC handlers for cron-driven automation.
 - `tm discover`, run Inductive Miner discovery on the events log.
 - `tm bottlenecks`, analyze per-activity duration and top direct-follow edges.
-- `tm variants`, list distinct activity sequences ordered by frequency.
+- `tm variants [--trend --since YYYY-MM-DD --until YYYY-MM-DD]`, list distinct
+  activity sequences ordered by frequency, optionally labeling movement versus
+  the previous equal-size window.
+- `tm capture telegram|calendar|voice`, import Telegram JSON exports, UTC
+  single-instance `.ics` events, or already-transcribed voice notes.
+- `tm dashboard [--since YYYY-MM-DD] [--until YYYY-MM-DD]`, show compact local
+  event, activity, transcript, and suggestion metrics.
 - `tm debrief --transcript-file PATH | --from-stdin`, run the LLM-backed
   debrief extractor against a transcript and persist events.
+- `tm export [--output PATH]` and `tm backup --output PATH [--overwrite]`,
+  write private JSON exports or SQLite backups.
+- `tm privacy redact|forget (--case-date YYYY-MM-DD | --event-id ID)`, redact
+  or delete local event/transcript/suggestion data and clear derived Kuzu
+  projections.
+- `tm reextract --case-date YYYY-MM-DD [--transcript-file PATH]`, replay a
+  retained transcript through the current debrief extractor.
+- `tm encryption status|set-key`, report SQLCipher/keyring state or store a
+  SQLCipher key in keyring for an empty encrypted database.
 - `tm suggest [--case-goal-id ULID]`, run the scheduler agent for a case date
   and render the suggestion (or skip reason).
 
@@ -217,7 +233,7 @@ it uses `~/.local/share/tm`.
   `CostMeter`, and typed LLM errors.
 - `tm/daemon.py`, Unix-socket single-writer scaffold for future multi-writer
   scenarios.
-- `migrations/`, 10 numbered SQL migrations. They are idempotent and
+- `migrations/`, 11 numbered SQL migrations. They are idempotent and
   checksum-verified by the migration runner.
 
 ## Known Limitations And v1.x Backlog
@@ -237,9 +253,13 @@ See [docs/release/v1.md](docs/release/v1.md) for the canonical backlog.
   `run_debrief` and `propose_suggestion` as LLM-backed handlers that bypass
   the coarse write lock; the duplicate-summary race this exposed is guarded by
   migration 0010.
-- **Variant trend labeling** is open. Current variants are grouped across the
-  requested case window and labeled by outcome; what does not ship yet is a
-  trend/drift layer that explains how those variant labels change over time.
+- Capture/import surfaces now exist for Telegram JSON exports, iCalendar files,
+  and already-transcribed voice notes via `tm capture`.
+- `tm dashboard`, `tm export`, `tm backup`, `tm privacy redact`, `tm privacy
+  forget`, `tm reextract`, `tm encryption status`, and `tm variants --trend`
+  cover the v1.1 local operator surface.
+- Full live Telegram bot polling, CalDAV sync, and audio transcription remain
+  separate integrations; this branch ships local import/capture commands.
 
 ## License / Contributing
 
