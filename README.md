@@ -34,6 +34,28 @@ Cold installs can take a bit because `pm4py` pulls the process-mining stack and
 `kuzu` pulls the graph database wheel. Together they add roughly 75 MB of
 transitive packages.
 
+## Local web cockpit
+
+Install the optional web dependencies and run the local API:
+
+```bash
+python -m pip install -e ".[web]"
+tm web --host 127.0.0.1 --port 8765
+```
+
+During frontend development, run the Vite app from `frontend/`; it proxies
+`/api` to `tm web`:
+
+```bash
+cd frontend
+npm install
+npm run dev -- --port 5173
+```
+
+The UI stores its selected local agent in the existing tm data directory as
+`web-config.json`. Local agent auth remains owned by each CLI: Codex, Claude
+Code, Gemini, Kimchi, and OpenClaw are not re-authenticated by tm.
+
 ## Quickstart
 
 This path stays under five minutes and creates a local SQLite workspace.
@@ -60,7 +82,7 @@ starter vocabulary:
 
 ```text
 tm init: db=/home/you/.local/share/tm/tm.db
-  applied 10 migrations
+  applied 11 migrations
   seeded 16 starter activities
   seeded 5 starter aliases
 ```
@@ -90,9 +112,10 @@ tm debrief --transcript-file today.txt --case-date 2026-05-06
 ```
 
 `tm debrief` reads a transcript from `--transcript-file PATH` or `--from-stdin`,
-calls `DebriefAgent.extract_and_persist`, and persists structured events. It
-prints `events_persisted`, novel labels, summary counts, and estimated +
-actual cost. `TM_LLM_API_KEY` must be set.
+retains the transcript for `tm reextract`, calls
+`DebriefAgent.extract_and_persist`, and persists structured events. It prints
+`events_persisted`, novel labels, summary counts, and estimated + actual cost.
+`TM_LLM_API_KEY` must be set.
 
 The full pipeline is:
 
@@ -167,9 +190,25 @@ start reading from the events log.
   `rebuild_kuzu_projection` as RPC handlers for cron-driven automation.
 - `tm discover`, run Inductive Miner discovery on the events log.
 - `tm bottlenecks`, analyze per-activity duration and top direct-follow edges.
-- `tm variants`, list distinct activity sequences ordered by frequency.
+- `tm variants [--trend --since YYYY-MM-DD --until YYYY-MM-DD]`, list distinct
+  activity sequences ordered by frequency, optionally labeling movement versus
+  the previous equal-size window.
+- `tm capture telegram|calendar|voice`, import Telegram JSON exports, UTC
+  single-instance `.ics` events, or already-transcribed voice notes.
+- `tm dashboard [--since YYYY-MM-DD] [--until YYYY-MM-DD]`, show compact local
+  event, activity, transcript, and suggestion metrics.
 - `tm debrief --transcript-file PATH | --from-stdin`, run the LLM-backed
   debrief extractor against a transcript and persist events.
+- `tm export [--output PATH]` and `tm backup --output PATH [--overwrite]`,
+  write private JSON exports or SQLite backups.
+- `tm privacy redact|forget (--case-date YYYY-MM-DD | --event-id ID)`, redact
+  or delete local event/transcript/suggestion data and clear derived Kuzu
+  projections.
+- `tm reextract --case-date YYYY-MM-DD [--transcript-file PATH]`, replay a
+  retained transcript through the current debrief extractor.
+- `tm encryption status|set-key`, report SQLCipher/keyring state or store a
+  SQLCipher key in keyring for an empty encrypted database.
+- `tm web`, run the local browser cockpit UI.
 - `tm suggest [--case-goal-id ULID]`, run the scheduler agent for a case date
   and render the suggestion (or skip reason).
 
@@ -209,15 +248,15 @@ it uses `~/.local/share/tm`.
 - `tm/engines/{process_mining,variant_cluster,scheduler_metric,prescriptive_monitoring}.py`,
   pure-Python engines for discovery, variant labeling, scheduler metrics, and
   guardrails.
-- `tm/repositories/{events,goals,vocabulary,telemetry}.py`, per-call `sqlite3`
-  repositories for the durable product records.
+- `tm/repositories/{events,goals,vocabulary,telemetry,transcripts}.py`,
+  per-call `sqlite3` repositories for the durable product records.
 - `tm/stores/{sqlite_store,kuzu_store,kuzu_projection}.py`, persistence layer
   for migrations, SQLite storage, Kuzu Petri-net storage, and graph projection.
 - `tm/llm/`, provider-neutral `LLMClient` protocol, `AnthropicAdapter`,
   `CostMeter`, and typed LLM errors.
 - `tm/daemon.py`, Unix-socket single-writer scaffold for future multi-writer
   scenarios.
-- `migrations/`, 10 numbered SQL migrations. They are idempotent and
+- `migrations/`, 11 numbered SQL migrations. They are idempotent and
   checksum-verified by the migration runner.
 
 ## Known Limitations And v1.x Backlog
@@ -237,9 +276,13 @@ See [docs/release/v1.md](docs/release/v1.md) for the canonical backlog.
   `run_debrief` and `propose_suggestion` as LLM-backed handlers that bypass
   the coarse write lock; the duplicate-summary race this exposed is guarded by
   migration 0010.
-- **Variant trend labeling** is open. Current variants are grouped across the
-  requested case window and labeled by outcome; what does not ship yet is a
-  trend/drift layer that explains how those variant labels change over time.
+- Capture/import surfaces now exist for Telegram JSON exports, iCalendar files,
+  and already-transcribed voice notes via `tm capture`.
+- `tm dashboard`, `tm export`, `tm backup`, `tm privacy redact`, `tm privacy
+  forget`, `tm reextract`, `tm encryption status`, and `tm variants --trend`
+  cover the v1.1 local operator surface.
+- Full live Telegram bot polling, CalDAV sync, and audio transcription remain
+  separate integrations; this branch ships local import/capture commands.
 
 ## License / Contributing
 
