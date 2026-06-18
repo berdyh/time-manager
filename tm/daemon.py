@@ -93,7 +93,7 @@ from tm.llm.anthropic_adapter import ANTHROPIC_API_KEY_ENV
 from tm.llm.client import LLMClient
 from tm.llm.cost_meter import CostMeter
 from tm.llm.errors import CostCapExceeded, LLMClientError
-from tm.llm.factory import build_llm_client
+from tm.llm.factory import DEFAULT_BACKEND, build_llm_client
 from tm.models.outcome import OutcomeAggregator
 from tm.repositories.events import EventsRepository
 from tm.repositories.goals import GoalsRepository
@@ -155,7 +155,12 @@ _READ_METHODS = frozenset({"ping", "check_budget"})
 _LLM_METHODS = frozenset({"run_debrief", "propose_suggestion"})
 
 
-def _build_llm_client(model: str, max_tokens: int) -> LLMClient:
+def _build_llm_client(
+    model: str | None,
+    max_tokens: int,
+    *,
+    backend: str | None = None,
+) -> LLMClient:
     """Construct the LLMClient used by the daemon's LLM-backed handlers.
 
     Tests patch this factory (rather than the underlying adapter directly) to
@@ -163,10 +168,22 @@ def _build_llm_client(model: str, max_tokens: int) -> LLMClient:
     a module-level function so ``unittest.mock.patch`` resolves it cleanly.
 
     Delegates to :func:`tm.llm.factory.build_llm_client`, which reads
-    ``TM_LLM_BACKEND`` to select between AnthropicAdapter, CodexAdapter,
-    and ClaudeCodeAdapter.
+    ``TM_LLM_BACKEND`` unless the caller passes an explicit backend.
     """
-    return build_llm_client(model=model, max_tokens=max_tokens)
+    return build_llm_client(backend=backend, model=model, max_tokens=max_tokens)
+
+
+def _backend_requires_tm_api_key(params: dict[str, Any]) -> bool:
+    backend = params.get("backend")
+    if not isinstance(backend, str) or not backend:
+        backend = DEFAULT_BACKEND
+    return backend in {"anthropic", "claude-code"}
+
+
+def _default_model_for_backend(backend: str | None) -> str | None:
+    if backend is None or backend in {"anthropic", "claude-code"}:
+        return "claude-sonnet-4-6"
+    return None
 
 
 def _llm_envelope(
@@ -199,7 +216,9 @@ def _llm_envelope(
 
     @functools.wraps(fn)
     def wrapped(self: TMDaemon, params: dict[str, Any]) -> dict[str, Any]:
-        if not os.environ.get(ANTHROPIC_API_KEY_ENV):
+        if _backend_requires_tm_api_key(params) and not os.environ.get(
+            ANTHROPIC_API_KEY_ENV
+        ):
             return {
                 "ok": False,
                 "error": "MissingApiKey",
@@ -760,14 +779,17 @@ class TMDaemon:
 
         model = params.get("model")
         model_str = str(model) if isinstance(model, str) and model else None
+        backend = params.get("backend")
+        backend_str = str(backend) if isinstance(backend, str) and backend else None
         max_tokens = params.get("max_tokens")
         max_tokens_int = int(max_tokens) if isinstance(max_tokens, int) else None
 
         # Build LLM client + agent dependencies per-request. The factory
         # is module-level so tests can patch it cleanly.
         llm = _build_llm_client(
-            model=model_str or "claude-sonnet-4-6",
+            model=model_str or _default_model_for_backend(backend_str),
             max_tokens=max_tokens_int or 4096,
+            backend=backend_str,
         )
 
         vocab_repo = VocabularyRepository(self._db_path)
@@ -836,12 +858,15 @@ class TMDaemon:
 
         model = params.get("model")
         model_str = str(model) if isinstance(model, str) and model else None
+        backend = params.get("backend")
+        backend_str = str(backend) if isinstance(backend, str) and backend else None
         max_per_day_raw = params.get("max_per_day")
         max_per_day = int(max_per_day_raw) if isinstance(max_per_day_raw, int) else None
 
         llm = _build_llm_client(
-            model=model_str or "claude-sonnet-4-6",
+            model=model_str or _default_model_for_backend(backend_str),
             max_tokens=1024,
+            backend=backend_str,
         )
 
         events_repo = EventsRepository(self._db_path)
