@@ -35,6 +35,7 @@ from tm.daemon import (
 from tm.llm.cost_meter import CostMeter
 from tm.repositories.events import EventsRepository
 from tm.repositories.goals import GoalsRepository
+from tm.repositories.transcripts import TranscriptRepository
 from tm.repositories.vocabulary import VocabularyRepository
 from tm.resilience import ResilienceError, disk_space_pre_check
 from tm.store import Store
@@ -739,6 +740,9 @@ def test_handle_run_debrief_success(
     # Confirm the event landed.
     rows = EventsRepository(db).query_events(case_date="2026-05-06")
     assert any(e.get("activity") == "deep_work" for e in rows)
+    transcript = TranscriptRepository(db).get("2026-05-06")
+    assert transcript is not None
+    assert transcript.transcript_text == "I did deep work all morning."
 
 
 # ----- propose_suggestion --------------------------------------------------

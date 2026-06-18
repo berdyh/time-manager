@@ -98,6 +98,7 @@ from tm.models.outcome import OutcomeAggregator
 from tm.repositories.events import EventsRepository
 from tm.repositories.goals import GoalsRepository
 from tm.repositories.telemetry import SuggestionTelemetryRepository
+from tm.repositories.transcripts import TranscriptRepository
 from tm.repositories.vocabulary import VocabularyRepository
 from tm.stores.kuzu_projection import rebuild_kuzu_projection
 from tm.stores.kuzu_store import KuzuStore
@@ -790,6 +791,12 @@ class TMDaemon:
         result = agent.extract_and_persist(
             transcript=transcript,
             case_date=case_date_raw,
+        )
+        TranscriptRepository(self._db_path).upsert(
+            case_date=case_date_raw,
+            transcript_text=transcript,
+            source="debrief",
+            extractor_version="debrief-v1",
         )
         return {
             "ok": True,
