@@ -30,6 +30,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from tm.llm.errors import CostCapExceeded
+from tm.security import connect_sqlite
 
 __all__ = [
     "DEFAULT_MONTHLY_CAP_USD",
@@ -167,7 +168,7 @@ class CostMeter:
 
     def _connect(self) -> sqlite3.Connection:
         """Open a short-lived connection. Foreign keys on by default."""
-        conn = sqlite3.connect(self._db_path, timeout=5.0)
+        conn = connect_sqlite(self._db_path, timeout=5.0)
         conn.execute("PRAGMA foreign_keys=ON")
         return conn
 

@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 
 _APP_NAME = "tm"
+KUZU_PROJECTION_MARKER = ".tm-kuzu-projection"
 
 
 def default_data_dir() -> Path:
@@ -23,6 +24,7 @@ def default_data_dir() -> Path:
     base = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
     p = Path(base) / _APP_NAME
     p.mkdir(parents=True, exist_ok=True)
+    p.chmod(0o700)
     return p
 
 
@@ -33,6 +35,19 @@ def default_db_path() -> Path:
     is created as a side-effect.
     """
     return default_data_dir() / "tm.db"
+
+
+def default_kuzu_path() -> Path:
+    """Return the default local Kuzu projection directory."""
+    return default_data_dir() / "kuzu"
+
+
+def kuzu_projection_marker_path(kuzu_db_path: Path | str) -> Path:
+    """Return the ownership marker path for a Kuzu projection path."""
+    path = Path(kuzu_db_path)
+    if path.exists() and path.is_dir():
+        return path / KUZU_PROJECTION_MARKER
+    return path.with_name(f"{path.name}{KUZU_PROJECTION_MARKER}")
 
 
 def default_socket_path() -> Path:

@@ -25,12 +25,12 @@ with all migrations applied.
 
 from __future__ import annotations
 
-import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from tm.llm.client import Message
+from tm.security import connect_sqlite
 from tm.vocab_alignment_errors import AlignmentError
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -329,7 +329,7 @@ class VocabAligner:
         if clauses:
             sql += " WHERE " + " AND ".join(clauses)
 
-        conn = sqlite3.connect(self._db_path)
+        conn = connect_sqlite(self._db_path)
         try:
             rows = conn.execute(sql, params).fetchall()
         finally:
@@ -374,7 +374,7 @@ class VocabAligner:
             return []
 
         drifted: list[str] = []
-        conn = sqlite3.connect(self._db_path)
+        conn = connect_sqlite(self._db_path)
         try:
             for name in active_names:
                 row = conn.execute(
