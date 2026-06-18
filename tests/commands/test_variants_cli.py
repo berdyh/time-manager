@@ -63,6 +63,7 @@ def test_variants_help() -> None:
     assert "--since" in result.output
     assert "--until" in result.output
     assert "--top-n" in result.output
+    assert "--trend" in result.output
     assert "--db-path" in result.output
 
 
@@ -225,3 +226,37 @@ def test_variants_shows_case_count_per_variant(tmp_path: Path) -> None:
     result = _invoke("--lens", "workday", db_path=db)
     assert result.exit_code == 0, result.output
     assert "cases=3" in result.output
+
+
+def test_variants_trend_compares_previous_equal_window(tmp_path: Path) -> None:
+    db = _db(tmp_path)
+    _seed_case(
+        db,
+        "2026-01-01",
+        [("email", "2026-01-01T09:00:00Z")],
+    )
+    _seed_case(
+        db,
+        "2026-01-08",
+        [("email", "2026-01-08T09:00:00Z")],
+    )
+    _seed_case(
+        db,
+        "2026-01-09",
+        [("email", "2026-01-09T09:00:00Z")],
+    )
+
+    result = _invoke(
+        "--lens",
+        "workday",
+        "--since",
+        "2026-01-08",
+        "--until",
+        "2026-01-15",
+        "--trend",
+        db_path=db,
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "trend=rising" in result.output
+    assert "prev_cases=1" in result.output

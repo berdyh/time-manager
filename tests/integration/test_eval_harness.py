@@ -18,6 +18,9 @@ import pytest
 
 from tests.integration.eval_harness import (
     FIXTURES_DIR,
+    LIVE_THRESHOLD_FIELD_LEVEL,
+    LIVE_THRESHOLD_TRACE_LEVEL,
+    LIVE_THRESHOLD_VARIANT_ASSIGNMENT,
     PLAN_THRESHOLD_FIELD_LEVEL,
     PLAN_THRESHOLD_TRACE_LEVEL,
     PLAN_THRESHOLD_VARIANT_ASSIGNMENT,
@@ -35,6 +38,13 @@ def test_plan_thresholds_are_locked_v1_values() -> None:
     assert PLAN_THRESHOLD_FIELD_LEVEL == 0.85
     assert PLAN_THRESHOLD_TRACE_LEVEL == 0.70
     assert PLAN_THRESHOLD_VARIANT_ASSIGNMENT == 0.75
+
+
+def test_live_thresholds_are_separate_from_mock_gates() -> None:
+    assert LIVE_THRESHOLD_FIELD_LEVEL == 0.60
+    assert LIVE_THRESHOLD_TRACE_LEVEL == 0.20
+    assert LIVE_THRESHOLD_VARIANT_ASSIGNMENT == 0.50
+    assert LIVE_THRESHOLD_FIELD_LEVEL < PLAN_THRESHOLD_FIELD_LEVEL
 
 
 def test_eval_result_is_frozen() -> None:
