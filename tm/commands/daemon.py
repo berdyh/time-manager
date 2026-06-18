@@ -1,9 +1,8 @@
 """tm daemon CLI: start, stop, status.
 
-v1 supports foreground mode only (``--foreground``).  Real daemonization
-(double-fork, setsid, stdio redirect) is deferred to a future task; production
-deployments should use a process supervisor (systemd, launchd, etc.) that
-invokes ``tm daemon start --foreground``.
+Foreground mode remains the default for process supervisors. Passing
+``--no-foreground`` performs a small POSIX double-fork detach, writes the child
+PID file, and redirects stdio to ``/dev/null``.
 
 Signal handling
 ---------------
@@ -20,6 +19,7 @@ from __future__ import annotations
 import os
 import signal
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated
 
@@ -29,6 +29,49 @@ from tm._paths import default_db_path, default_pid_path, default_socket_path
 from tm.daemon import DaemonClient, TMDaemon
 
 daemon_app = typer.Typer(help="Daemon — start, stop, status.")
+
+
+def _daemonize() -> None:
+    """Detach the current process using the standard POSIX double-fork."""
+    if os.name != "posix":
+        typer.echo("error: --no-foreground is only supported on POSIX", err=True)
+        raise typer.Exit(2)
+
+    first_pid = os.fork()
+    if first_pid > 0:
+        raise typer.Exit(0)
+
+    os.setsid()
+
+    second_pid = os.fork()
+    if second_pid > 0:
+        os._exit(0)
+
+    os.chdir("/")
+    os.umask(0o077)
+    with (
+        open(os.devnull, "rb", buffering=0) as stdin,
+        open(os.devnull, "ab", buffering=0) as stdout,
+        open(os.devnull, "ab", buffering=0) as stderr,
+    ):
+        os.dup2(stdin.fileno(), 0)
+        os.dup2(stdout.fileno(), 1)
+        os.dup2(stderr.fileno(), 2)
+
+
+def _preflight_pid_write(pid_path: Path) -> None:
+    pid_path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(pid_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        os.write(fd, b"0")
+    finally:
+        os.close(fd)
+        pid_path.unlink(missing_ok=True)
+
+
+def _resolve_path(path: Path | None, default: Callable[[], Path]) -> Path:
+    target = path if path is not None else default()
+    return target.expanduser().resolve(strict=False)
 
 
 # ------------------------------------------------------------------ start
@@ -54,22 +97,14 @@ def start(
         bool,
         typer.Option(
             "--foreground/--no-foreground",
-            help="Run in foreground (blocking). Only --foreground is supported in v1.",
+            help="Run in foreground. Use --no-foreground to detach.",
         ),
     ] = True,
 ) -> None:
-    """Start the daemon.  Blocks until SIGTERM/SIGINT.
-
-    Only foreground mode is supported in v1 (``--foreground``).  Pass
-    ``--no-foreground`` to get an explicit error rather than silent failure.
-    """
-    if not foreground:
-        typer.echo("error: only --foreground is supported in v1", err=True)
-        raise typer.Exit(2)
-
-    resolved_db = db_path or default_db_path()
-    resolved_socket = socket_path or default_socket_path()
-    resolved_pid = pid_path or default_pid_path()
+    """Start the daemon."""
+    resolved_db = _resolve_path(db_path, default_db_path)
+    resolved_socket = _resolve_path(socket_path, default_socket_path)
+    resolved_pid = _resolve_path(pid_path, default_pid_path)
 
     # ---- stale / live PID check ------------------------------------------
     if resolved_pid.exists():
@@ -89,8 +124,19 @@ def start(
         except (ValueError, OSError):
             resolved_pid.unlink(missing_ok=True)
 
+    if not foreground:
+        _preflight_pid_write(resolved_pid)
+
     # ---- build daemon + write PID ----------------------------------------
     daemon = TMDaemon(db_path=resolved_db, socket_path=resolved_socket)
+    if not foreground:
+        preflight_sock = daemon._bind_socket()
+        try:
+            preflight_sock.close()
+        finally:
+            resolved_socket.unlink(missing_ok=True)
+        _daemonize()
+
     resolved_pid.write_text(str(os.getpid()))
 
     # ---- install signal handlers -----------------------------------------
@@ -123,7 +169,7 @@ def stop(
     ] = 5.0,
 ) -> None:
     """Stop the daemon by reading the PID file and sending SIGTERM."""
-    resolved_pid = pid_path or default_pid_path()
+    resolved_pid = _resolve_path(pid_path, default_pid_path)
 
     if not resolved_pid.exists():
         typer.echo(f"error: no PID file at {resolved_pid}", err=True)
@@ -176,8 +222,8 @@ def status(
     ] = None,
 ) -> None:
     """Report daemon status: alive (responds to ping) or down."""
-    resolved_socket = socket_path or default_socket_path()
-    resolved_pid = pid_path or default_pid_path()
+    resolved_socket = _resolve_path(socket_path, default_socket_path)
+    resolved_pid = _resolve_path(pid_path, default_pid_path)
 
     pid_present = resolved_pid.exists()
     socket_present = resolved_socket.exists()
