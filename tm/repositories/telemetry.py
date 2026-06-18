@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from tm.models.goals import ulid
+from tm.security import connect_sqlite, enable_wal_mode
 
 __all__ = ["SuggestionTelemetryRepository", "SuggestionRecord"]
 
@@ -31,10 +32,9 @@ def _now_iso() -> str:
 
 
 def _open_conn(db_path: str) -> sqlite3.Connection:
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
+    conn = connect_sqlite(db_path, row_factory=True)
     conn.execute("PRAGMA foreign_keys=ON")
-    conn.execute("PRAGMA journal_mode=WAL")
+    enable_wal_mode(conn, db_path)
     return conn
 
 
