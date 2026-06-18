@@ -50,6 +50,7 @@ from pathlib import Path
 
 import kuzu
 
+from tm._paths import kuzu_projection_marker_path
 from tm.engines.petri_net import (
     ArcData,
     MarkingData,
@@ -200,6 +201,7 @@ class KuzuStore:
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         self._database = kuzu.Database(str(self._db_path))
         self._connection = kuzu.Connection(self._database)
+        kuzu_projection_marker_path(self._db_path).touch(exist_ok=True)
         self._ensure_schema()
 
     # ------------------------------------------------------------------
