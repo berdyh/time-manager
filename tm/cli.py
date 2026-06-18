@@ -23,6 +23,7 @@ from tm.commands.reextract import reextract_app
 from tm.commands.suggest import suggest_app
 from tm.commands.variants import variants_app
 from tm.commands.vocab import vocab_app
+from tm.commands.web import web_app
 from tm.repositories.vocabulary import VocabularyRepository
 from tm.stores.sqlite_store import SQLiteStore
 
@@ -42,6 +43,7 @@ app.add_typer(reextract_app, name="reextract")
 app.add_typer(suggest_app, name="suggest")
 app.add_typer(variants_app, name="variants")
 app.add_typer(vocab_app, name="vocab")
+app.add_typer(web_app, name="web")
 
 _DbPathOption = Annotated[
     Path | None,
