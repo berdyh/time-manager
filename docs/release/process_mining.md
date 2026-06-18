@@ -61,7 +61,7 @@ Process-mining engine integration covering the four canonical operations on XES-
 | `tests/commands/test_bottlenecks_cli.py` | per-activity output, duration humanizer edge cases, top-N edges |
 | `tests/commands/test_variants_cli.py` | top-N truncation, frequency-desc ordering, empty log |
 
-**Project total:** 394 passed + 1 skipped (suite green, ruff clean, mypy clean across 38 source files).
+**Promotion-time project total:** 394 passed + 1 skipped (suite green, ruff clean, mypy clean across 38 source files).
 
 ---
 
@@ -69,10 +69,10 @@ Process-mining engine integration covering the four canonical operations on XES-
 
 1. **Frozen dataclasses on every engine return** — keeps PM4Py types from leaking across module boundaries; lets downstream Kuzu projection and CLI treat results as plain serializable Python.
 2. **Two named case lenses** (`workday` / `goal_pursuit`) instead of free-form case keys — aligns the events table's two new XES columns (`case_date`, `case_goal_id`) with explicit, type-checked entry points.
-3. **Conformance v1 re-mines from the originating window** — avoids a persisted-model dependency for engine-only consumers; gracefully degrades when no rehydration source exists. The `rehydration_fallback_used` flag in `extractor_metadata` surfaces the degradation. T-PM-02 v2 follow-up will rehydrate from KuzuStore.
-4. **Kuzu projection re-runs Inductive Miner** instead of reading the net off `DiscoveredModel` — wasteful and pinned for T-PM-02 follow-up; chosen over expanding T-PM-02's public dataclass surface mid-flight.
+3. **Conformance prefers `DiscoveredModel.petri_net`** — current conformance rehydrates from the model's first-class `PetriNetData` when present and only re-mines the originating window as a fallback. The `extractor_metadata["rehydration_source"]` field surfaces which path ran.
+4. **Kuzu projection consumes `DiscoveredModel.petri_net`** — `PetriNetData` is first-class on discovered models, so projection no longer re-runs Inductive Miner or reaches into private process-mining internals.
 5. **Model IDs are deterministic** from `(lens, since, until)` — re-projecting the same window replaces the stored model rather than producing duplicates.
-6. **CLI is read-only on Kuzu** — persistence is daemon-owned by convention; the operator surface only consumes ProcessMiner outputs. Daemon wiring of `rebuild_kuzu_projection` is deferred to T-INT-02.
+6. **CLI is read-only on Kuzu** — persistence is daemon-owned by convention; the operator surface only consumes ProcessMiner outputs. The daemon exposes `rebuild_kuzu_projection` as the write path for external schedulers.
 7. **Kuzu version pin widened** from the original `>= 0.3, < 0.5` to `>= 0.11, < 1` — those original ranges shipped no wheels for current Python and source builds failed in uv's isolated environment; 0.11.x ships prebuilt wheels with stable API. Documented in `pyproject.toml` inline comment + the `e6ca78a` commit message.
 
 ---
@@ -103,6 +103,7 @@ Run `apply_pending_migrations()` to install **migration 0006** (XES columns: `ca
 - ~~**T-PM-02 follow-up:** surface `PetriNetData` on `DiscoveredModel` directly~~ — **DONE** (Tier-A bundle, commit `09cca89`); `tm/engines/petri_net.py` is the canonical home.
 - ~~**T-PM-02 v2 follow-up:** rehydrate conformance from cached `PetriNetData` instead of re-mining~~ — **DONE** (commit `2659e64`); `petri_net_data_to_pm4py` reverse converter + `model.petri_net` fast-path; `extractor_metadata["rehydration_source"]` exposes the path taken.
 - ~~**T-INT-02 daemon wiring:** call `rebuild_kuzu_projection` from the daemon~~ — **DONE** (commit `d234e26`); RPC handler invokable from external cron/systemd timer.
-- ~~**T-INT-02 scheduler agent:** consume `ProcessMiner` outputs as scheduling signals~~ — **DONE** earlier in v1; SchedulerAgent at `tm/agents/scheduler.py` uses `analyze_variants`, `analyze_performance`, and `conformance_token_replay`.
+- ~~**T-INT-02 scheduler agent:** consume variant outputs as scheduling signals~~ — **DONE** earlier in v1; SchedulerAgent at `tm/agents/scheduler.py` uses `analyze_variants` plus `VariantClusterer.cluster_workday_variants`.
+- **Open:** scheduler use of process-mining performance and conformance signals. `analyze_performance` and `conformance_token_replay` are available APIs, but SchedulerAgent does not consume them yet.
 - **Optional:** weighted-arc regression test (current tests use default `weight=1`).
-- **Open (Tier S):** multiday variant clustering — scheduler windows 14 days but `VariantClusterer` only labels single cases.
+- **Open (Tier S):** variant trend/drift labeling — scheduler windows 14 days and `VariantClusterer` labels variants across the requested case window by mean outcome, but there is no trend layer that explains how labels move across weeks or months.

@@ -60,7 +60,7 @@ starter vocabulary:
 
 ```text
 tm init: db=/home/you/.local/share/tm/tm.db
-  applied 9 migrations
+  applied 10 migrations
   seeded 16 starter activities
   seeded 5 starter aliases
 ```
@@ -177,15 +177,17 @@ start reading from the events log.
 
 - `TM_DB`, path to the SQLite database. Default:
   `~/.local/share/tm/tm.db`.
-- `TM_LLM_API_KEY`, Anthropic API key. Required for debrief extraction and
-  scheduler suggestions when using the `anthropic` or `claude-code` backends.
-  The `claude-code` backend mirrors this into `ANTHROPIC_API_KEY` for the
-  child subprocess only. The `codex` backend ignores this variable and uses
-  whatever credentials `codex login` configured.
+- `TM_LLM_API_KEY`, v1 guard for LLM-backed debrief extraction and scheduler
+  suggestions. Current CLI and daemon request paths require this variable to
+  be non-empty before backend selection. For `anthropic` and `claude-code`, it
+  must be a valid Anthropic key; `claude-code` mirrors it into
+  `ANTHROPIC_API_KEY` for the child subprocess only. The `codex` backend ignores
+  the value after the guard and uses whatever credentials `codex login`
+  configured for the actual model call.
 - `TM_LLM_BACKEND`, backend selector. One of:
   - `anthropic` (default): direct Anthropic SDK; reads `TM_LLM_API_KEY`.
   - `codex`: subprocess to the OpenAI Codex CLI (`codex exec --json`); uses
-    `codex login` credentials.
+    `codex login` credentials after the shared `TM_LLM_API_KEY` guard passes.
   - `claude-code`: subprocess to the Claude Code CLI
     (`claude --bare --print --output-format json`); reads `TM_LLM_API_KEY`
     (bridged to `ANTHROPIC_API_KEY` for the subprocess).
@@ -215,7 +217,7 @@ it uses `~/.local/share/tm`.
   `CostMeter`, and typed LLM errors.
 - `tm/daemon.py`, Unix-socket single-writer scaffold for future multi-writer
   scenarios.
-- `migrations/`, 9 numbered SQL migrations. They are idempotent and
+- `migrations/`, 10 numbered SQL migrations. They are idempotent and
   checksum-verified by the migration runner.
 
 ## Known Limitations And v1.x Backlog
@@ -230,12 +232,14 @@ See [docs/release/v1.md](docs/release/v1.md) for the canonical backlog.
 - ~~LLM-driven debrief ingestion has no CLI command yet.~~ Closed — `tm
   debrief` ships in commit `c1674fd`; daemon RPC handlers `run_debrief` and
   `propose_suggestion` ship in commit `f2b39b1`.
-- **Concurrency carry-forward:** the daemon's `run_debrief` and
-  `propose_suggestion` handlers hold the single-writer lock for the duration
-  of the LLM call (seconds). Acceptable for single-operator v1 traffic;
-  future fix releases the lock around the LLM round-trip.
-- **Multiday variant clustering** is open. The scheduler windows 14 days, but
-  `VariantClusterer` only labels single cases.
+- ~~Concurrency carry-forward: daemon LLM handlers held the single-writer lock
+  for the duration of the LLM call.~~ Closed. The daemon now classifies
+  `run_debrief` and `propose_suggestion` as LLM-backed handlers that bypass
+  the coarse write lock; the duplicate-summary race this exposed is guarded by
+  migration 0010.
+- **Variant trend labeling** is open. Current variants are grouped across the
+  requested case window and labeled by outcome; what does not ship yet is a
+  trend/drift layer that explains how those variant labels change over time.
 
 ## License / Contributing
 
