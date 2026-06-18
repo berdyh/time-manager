@@ -219,29 +219,239 @@ def test_daemon_start_cleans_up_stale_pid_file(tmp_path: Path) -> None:
     assert not pid_file.exists()
 
 
-def test_daemon_start_no_foreground_errors(tmp_path: Path) -> None:
-    """``--no-foreground`` must exit with code 2 and an error message."""
+def test_daemon_start_no_foreground_detaches(tmp_path: Path) -> None:
+    """``--no-foreground`` runs the detach hook instead of rejecting."""
     db = _prepare_db(tmp_path)
     sock = tmp_path / "tm.sock"
     pid_file = tmp_path / "tm.pid"
 
-    result = runner.invoke(
-        app,
-        [
-            "daemon",
-            "start",
-            "--no-foreground",
-            "--db-path",
-            str(db),
-            "--socket-path",
-            str(sock),
-            "--pid-path",
-            str(pid_file),
-        ],
-    )
+    detached: list[bool] = []
 
-    assert result.exit_code == 2
-    assert "only --foreground is supported" in result.output
+    def _fake_daemonize() -> None:
+        detached.append(True)
+
+    def _immediate_run(self: TMDaemon) -> None:
+        self.shutdown()
+
+    with patch("tm.commands.daemon._daemonize", side_effect=_fake_daemonize):
+        with patch.object(TMDaemon, "run", _immediate_run):
+            result = runner.invoke(
+                app,
+                [
+                    "daemon",
+                    "start",
+                    "--no-foreground",
+                    "--db-path",
+                    str(db),
+                    "--socket-path",
+                    str(sock),
+                    "--pid-path",
+                    str(pid_file),
+                ],
+            )
+
+    assert result.exit_code == 0, result.output
+    assert detached == [True]
+    assert not pid_file.exists()
+
+
+def test_daemon_start_no_foreground_resolves_relative_paths_before_detach(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Relative paths stay anchored to the original CWD after daemon detach."""
+    monkeypatch.chdir(tmp_path)
+    Path("rel").mkdir()
+
+    captured: dict[str, Path] = {}
+
+    def _fake_daemonize() -> None:
+        os.chdir("/")
+
+    def _immediate_run(self: TMDaemon) -> None:
+        captured["db_path"] = self.db_path
+        captured["socket_path"] = self.socket_path
+        self.shutdown()
+
+    with patch("tm.commands.daemon._daemonize", side_effect=_fake_daemonize):
+        with patch.object(TMDaemon, "run", _immediate_run):
+            result = runner.invoke(
+                app,
+                [
+                    "daemon",
+                    "start",
+                    "--no-foreground",
+                    "--db-path",
+                    "rel/tm.db",
+                    "--socket-path",
+                    "rel/tm.sock",
+                    "--pid-path",
+                    "rel/tm.pid",
+                ],
+            )
+
+    assert result.exit_code == 0, result.output
+    assert captured["db_path"] == tmp_path / "rel" / "tm.db"
+    assert captured["socket_path"] == tmp_path / "rel" / "tm.sock"
+    assert not (tmp_path / "rel" / "tm.pid").exists()
+
+
+def test_daemon_explicit_paths_do_not_resolve_defaults(tmp_path: Path) -> None:
+    db = _prepare_db(tmp_path)
+    sock = tmp_path / "explicit.sock"
+    pid_file = tmp_path / "explicit.pid"
+
+    def _unexpected_default() -> Path:
+        raise AssertionError("default path should not be resolved")
+
+    def _immediate_run(self: TMDaemon) -> None:
+        self.shutdown()
+
+    with (
+        patch("tm.commands.daemon.default_db_path", side_effect=_unexpected_default),
+        patch(
+            "tm.commands.daemon.default_socket_path",
+            side_effect=_unexpected_default,
+        ),
+        patch("tm.commands.daemon.default_pid_path", side_effect=_unexpected_default),
+        patch.object(TMDaemon, "run", _immediate_run),
+    ):
+        started = runner.invoke(
+            app,
+            [
+                "daemon",
+                "start",
+                "--db-path",
+                str(db),
+                "--socket-path",
+                str(sock),
+                "--pid-path",
+                str(pid_file),
+            ],
+        )
+        stopped = runner.invoke(
+            app,
+            ["daemon", "stop", "--pid-path", str(pid_file)],
+        )
+        status = runner.invoke(
+            app,
+            [
+                "daemon",
+                "status",
+                "--socket-path",
+                str(sock),
+                "--pid-path",
+                str(pid_file),
+            ],
+        )
+
+    assert started.exit_code == 0, started.output
+    assert stopped.exit_code == 1, stopped.output
+    assert "no PID file" in stopped.output
+    assert status.exit_code == 1, status.output
+    assert "down" in status.output
+
+
+def test_daemon_start_no_foreground_refuses_live_pid_before_detach(
+    tmp_path: Path,
+) -> None:
+    """A live PID file fails before the detach hook can hide the error."""
+    db = _prepare_db(tmp_path)
+    sock = tmp_path / "tm.sock"
+    pid_file = tmp_path / "tm.pid"
+    pid_file.write_text(str(os.getpid()))
+    detached: list[bool] = []
+
+    def _fake_daemonize() -> None:
+        detached.append(True)
+
+    with patch("tm.commands.daemon._daemonize", side_effect=_fake_daemonize):
+        result = runner.invoke(
+            app,
+            [
+                "daemon",
+                "start",
+                "--no-foreground",
+                "--db-path",
+                str(db),
+                "--socket-path",
+                str(sock),
+                "--pid-path",
+                str(pid_file),
+            ],
+        )
+
+    assert result.exit_code == 1
+    assert "already running" in result.output
+    assert detached == []
+
+
+def test_daemon_start_no_foreground_preflights_socket_before_detach(
+    tmp_path: Path,
+) -> None:
+    """Socket bind failures surface before the parent reports detach success."""
+    db = _prepare_db(tmp_path)
+    sock = tmp_path / "tm.sock"
+    pid_file = tmp_path / "tm.pid"
+    detached: list[bool] = []
+
+    def _fake_daemonize() -> None:
+        detached.append(True)
+
+    with patch("tm.commands.daemon._daemonize", side_effect=_fake_daemonize):
+        with patch.object(TMDaemon, "_bind_socket", side_effect=RuntimeError("boom")):
+            result = runner.invoke(
+                app,
+                [
+                    "daemon",
+                    "start",
+                    "--no-foreground",
+                    "--db-path",
+                    str(db),
+                    "--socket-path",
+                    str(sock),
+                    "--pid-path",
+                    str(pid_file),
+                ],
+            )
+
+    assert result.exit_code == 1
+    assert detached == []
+    assert not pid_file.exists()
+
+
+def test_daemon_start_no_foreground_preflights_pid_write_before_detach(
+    tmp_path: Path,
+) -> None:
+    """PID write failures surface before the detach hook can report success."""
+    db = _prepare_db(tmp_path)
+    sock = tmp_path / "tm.sock"
+    pid_file = tmp_path / "tm.pid"
+    detached: list[bool] = []
+
+    def _fake_daemonize() -> None:
+        detached.append(True)
+
+    with patch("tm.commands.daemon._daemonize", side_effect=_fake_daemonize):
+        with patch("tm.commands.daemon.os.open", side_effect=PermissionError("boom")):
+            result = runner.invoke(
+                app,
+                [
+                    "daemon",
+                    "start",
+                    "--no-foreground",
+                    "--db-path",
+                    str(db),
+                    "--socket-path",
+                    str(sock),
+                    "--pid-path",
+                    str(pid_file),
+                ],
+            )
+
+    assert result.exit_code == 1
+    assert detached == []
+    assert not pid_file.exists()
 
 
 # ------------------------------------------------------------------ stop tests
@@ -312,6 +522,21 @@ def test_daemon_stop_stale_pid_file_cleaned_up(tmp_path: Path) -> None:
     assert not pid_file.exists()
 
 
+def test_daemon_stop_expands_pid_path(tmp_path: Path, monkeypatch) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    pid_file = home / "tm.pid"
+    pid_file.write_text("999999999")
+
+    with patch("tm.commands.daemon.os.kill", side_effect=ProcessLookupError):
+        result = runner.invoke(app, ["daemon", "stop", "--pid-path", "~/tm.pid"])
+
+    assert result.exit_code == 0, result.output
+    assert "stale" in result.output or "not running" in result.output
+    assert not pid_file.exists()
+
+
 # ------------------------------------------------------------------ status tests
 
 
@@ -362,6 +587,31 @@ def test_daemon_status_down_no_pid_no_socket(tmp_path: Path) -> None:
 
     assert result.exit_code == 1
     assert "down" in result.output
+
+
+def test_daemon_status_expands_pid_and_socket_paths(
+    tmp_path: Path, monkeypatch
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    pid_file = home / "tm.pid"
+    pid_file.write_text(str(os.getpid()))
+
+    result = runner.invoke(
+        app,
+        [
+            "daemon",
+            "status",
+            "--socket-path",
+            "~/tm.sock",
+            "--pid-path",
+            "~/tm.pid",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "unreachable" in result.output
 
 
 def test_daemon_status_unreachable_socket_present(tmp_path: Path) -> None:
