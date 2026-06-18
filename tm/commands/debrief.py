@@ -14,6 +14,7 @@ from tm.commands._shared import (
     ensure_migrations,
     require_api_key,
     utc_today,
+    validate_case_date,
 )
 from tm.llm.anthropic_adapter import (
     DEFAULT_MAX_TOKENS,
@@ -23,6 +24,7 @@ from tm.llm.cost_meter import CostMeter
 from tm.llm.factory import build_llm_client
 from tm.repositories.events import EventsRepository
 from tm.repositories.goals import GoalsRepository
+from tm.repositories.transcripts import TranscriptRepository
 from tm.repositories.vocabulary import VocabularyRepository
 from tm.vocab_alignment import VocabAligner
 
@@ -70,7 +72,7 @@ def _format_summary(summary: dict[str, int]) -> str:
     return "{" + ", ".join(parts) + "}"
 
 
-def _render_result(result: DebriefResult) -> None:
+def render_debrief_result(result: DebriefResult) -> None:
     typer.echo(f"Debrief complete: case_date={result.case_date}")
     typer.echo(f"Events persisted: {result.events_persisted}")
     typer.echo(
@@ -85,6 +87,26 @@ def _render_result(result: DebriefResult) -> None:
     typer.echo(f"Extractor version: {result.extractor_version}")
     if not result.extracted_events:
         typer.echo("No activity events extracted from transcript.")
+
+
+def build_debrief_agent(
+    *,
+    db_path: Path,
+    model: str,
+    max_tokens: int,
+    monthly_cap_usd: float,
+) -> DebriefAgent:
+    llm = build_llm_client(model=model, max_tokens=max_tokens)
+    vocab_repo = VocabularyRepository(db_path)
+    return DebriefAgent(
+        llm_client=llm,
+        vocab_aligner=VocabAligner(vocab_repo, llm),
+        goals_repo=GoalsRepository(db_path),
+        events_repo=EventsRepository(db_path),
+        cost_meter=CostMeter(db_path, monthly_cap_usd=monthly_cap_usd),
+        model=model,
+        max_tokens=max_tokens,
+    )
 
 
 @debrief_app.callback(invoke_without_command=True)
@@ -132,19 +154,14 @@ def debrief(
     require_api_key("tm debrief")
 
     resolved_db_path = db_path or default_db_path()
-    resolved_case_date = case_date or utc_today()
+    resolved_case_date = validate_case_date(case_date or utc_today())
 
     ensure_migrations(resolved_db_path)
-    llm = build_llm_client(model=model, max_tokens=max_tokens)
-    vocab_repo = VocabularyRepository(resolved_db_path)
-    agent = DebriefAgent(
-        llm_client=llm,
-        vocab_aligner=VocabAligner(vocab_repo, llm),
-        goals_repo=GoalsRepository(resolved_db_path),
-        events_repo=EventsRepository(resolved_db_path),
-        cost_meter=CostMeter(resolved_db_path, monthly_cap_usd=monthly_cap_usd),
+    agent = build_debrief_agent(
+        db_path=resolved_db_path,
         model=model,
         max_tokens=max_tokens,
+        monthly_cap_usd=monthly_cap_usd,
     )
     try:
         result = agent.extract_and_persist(
@@ -166,4 +183,10 @@ def debrief(
             err=True,
         )
         raise typer.Exit(1) from exc
-    _render_result(result)
+    TranscriptRepository(resolved_db_path).upsert(
+        case_date=resolved_case_date,
+        transcript_text=transcript,
+        source="debrief",
+        extractor_version="debrief-v1",
+    )
+    render_debrief_result(result)

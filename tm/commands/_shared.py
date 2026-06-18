@@ -35,6 +35,24 @@ def utc_today() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%d")
 
 
+def validate_case_date(value: str, option_name: str = "--case-date") -> str:
+    try:
+        parsed = datetime.strptime(value, "%Y-%m-%d")
+    except ValueError:
+        typer.echo(
+            f"error: invalid {option_name}: {value!r} (expected YYYY-MM-DD)",
+            err=True,
+        )
+        raise typer.Exit(2) from None
+    if parsed.strftime("%Y-%m-%d") != value:
+        typer.echo(
+            f"error: invalid {option_name}: {value!r} (expected YYYY-MM-DD)",
+            err=True,
+        )
+        raise typer.Exit(2)
+    return value
+
+
 def require_api_key(command_name: str) -> None:
     if not os.environ.get(API_KEY_ENV):
         typer.echo(
