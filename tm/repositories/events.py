@@ -136,6 +136,12 @@ def _row_to_event(row: sqlite3.Row) -> dict[str, Any]:
     return out
 
 
+def _ensure_goal_exists(conn: sqlite3.Connection, goal_id: str) -> None:
+    row = conn.execute("SELECT 1 FROM goals WHERE goal_id = ?", (goal_id,)).fetchone()
+    if row is None:
+        raise ValueError(f"unknown goal: {goal_id!r}")
+
+
 class EventsRepository:
     """Repository for the ``events`` table.
 
@@ -225,17 +231,9 @@ class EventsRepository:
         conn = _open_conn(self._db_path)
         try:
             if advances_goal is not None:
-                row = conn.execute(
-                    "SELECT 1 FROM goals WHERE goal_id = ?", (advances_goal,)
-                ).fetchone()
-                if row is None:
-                    raise ValueError(f"unknown goal: {advances_goal!r}")
+                _ensure_goal_exists(conn, advances_goal)
             if case_goal_id is not None:
-                row = conn.execute(
-                    "SELECT 1 FROM goals WHERE goal_id = ?", (case_goal_id,)
-                ).fetchone()
-                if row is None:
-                    raise ValueError(f"unknown goal: {case_goal_id!r}")
+                _ensure_goal_exists(conn, case_goal_id)
 
             conn.execute(
                 "INSERT INTO events ("

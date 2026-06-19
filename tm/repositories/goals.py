@@ -22,6 +22,10 @@ __all__ = ["GoalsRepository"]
 
 # ISO 8601 UTC format used throughout this project.
 _ISO_FMT = "%Y-%m-%dT%H:%M:%SZ"
+_SELECT_GOAL_COLUMNS = (
+    "goal_id, name, description, status, priority, target_completion_at, "
+    "created_at, completed_at, abandoned_at, abandon_reason"
+)
 
 
 def _now_iso() -> str:
@@ -48,6 +52,13 @@ def _row_to_goal(row: sqlite3.Row) -> Goal:
         abandoned_at=row["abandoned_at"],
         abandon_reason=row["abandon_reason"],
     )
+
+
+def _fetch_goal(conn: sqlite3.Connection, goal_id: str) -> sqlite3.Row | None:
+    return conn.execute(
+        f"SELECT {_SELECT_GOAL_COLUMNS} FROM goals WHERE goal_id = ?",
+        (goal_id,),
+    ).fetchone()
 
 
 class GoalsRepository:
@@ -108,13 +119,7 @@ class GoalsRepository:
                 (goal_id, name, description, priority, target_str, created_at),
             )
             conn.commit()
-            row = conn.execute(
-                "SELECT goal_id, name, description, status, priority, "
-                "target_completion_at, created_at, completed_at, "
-                "abandoned_at, abandon_reason "
-                "FROM goals WHERE goal_id = ?",
-                (goal_id,),
-            ).fetchone()
+            row = _fetch_goal(conn, goal_id)
         finally:
             conn.close()
 
@@ -133,13 +138,7 @@ class GoalsRepository:
         """
         conn = _open_conn(self._db_path)
         try:
-            row = conn.execute(
-                "SELECT goal_id, name, description, status, priority, "
-                "target_completion_at, created_at, completed_at, "
-                "abandoned_at, abandon_reason "
-                "FROM goals WHERE goal_id = ?",
-                (goal_id,),
-            ).fetchone()
+            row = _fetch_goal(conn, goal_id)
             if row is None:
                 raise ValueError(f"Unknown goal_id: {goal_id!r}")
             if row["status"] != "active":
@@ -152,13 +151,7 @@ class GoalsRepository:
                 (now, goal_id),
             )
             conn.commit()
-            row = conn.execute(
-                "SELECT goal_id, name, description, status, priority, "
-                "target_completion_at, created_at, completed_at, "
-                "abandoned_at, abandon_reason "
-                "FROM goals WHERE goal_id = ?",
-                (goal_id,),
-            ).fetchone()
+            row = _fetch_goal(conn, goal_id)
         finally:
             conn.close()
 
@@ -175,13 +168,7 @@ class GoalsRepository:
         """
         conn = _open_conn(self._db_path)
         try:
-            row = conn.execute(
-                "SELECT goal_id, name, description, status, priority, "
-                "target_completion_at, created_at, completed_at, "
-                "abandoned_at, abandon_reason "
-                "FROM goals WHERE goal_id = ?",
-                (goal_id,),
-            ).fetchone()
+            row = _fetch_goal(conn, goal_id)
             if row is None:
                 raise ValueError(f"Unknown goal_id: {goal_id!r}")
             if row["status"] != "active":
@@ -195,13 +182,7 @@ class GoalsRepository:
                 (now, reason, goal_id),
             )
             conn.commit()
-            row = conn.execute(
-                "SELECT goal_id, name, description, status, priority, "
-                "target_completion_at, created_at, completed_at, "
-                "abandoned_at, abandon_reason "
-                "FROM goals WHERE goal_id = ?",
-                (goal_id,),
-            ).fetchone()
+            row = _fetch_goal(conn, goal_id)
         finally:
             conn.close()
 
@@ -215,13 +196,7 @@ class GoalsRepository:
         """Return the ``Goal`` with the given ID, or ``None`` if not found."""
         conn = _open_conn(self._db_path)
         try:
-            row = conn.execute(
-                "SELECT goal_id, name, description, status, priority, "
-                "target_completion_at, created_at, completed_at, "
-                "abandoned_at, abandon_reason "
-                "FROM goals WHERE goal_id = ?",
-                (goal_id,),
-            ).fetchone()
+            row = _fetch_goal(conn, goal_id)
         finally:
             conn.close()
         return _row_to_goal(row) if row is not None else None
@@ -241,16 +216,12 @@ class GoalsRepository:
         try:
             if status == "all":
                 rows = conn.execute(
-                    "SELECT goal_id, name, description, status, priority, "
-                    "target_completion_at, created_at, completed_at, "
-                    "abandoned_at, abandon_reason "
+                    f"SELECT {_SELECT_GOAL_COLUMNS} "
                     "FROM goals ORDER BY created_at DESC, goal_id DESC",
                 ).fetchall()
             else:
                 rows = conn.execute(
-                    "SELECT goal_id, name, description, status, priority, "
-                    "target_completion_at, created_at, completed_at, "
-                    "abandoned_at, abandon_reason "
+                    f"SELECT {_SELECT_GOAL_COLUMNS} "
                     "FROM goals WHERE status = ? "
                     "ORDER BY created_at DESC, goal_id DESC",
                     (status,),
