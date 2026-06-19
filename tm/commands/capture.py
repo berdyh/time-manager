@@ -53,8 +53,6 @@ def _normalize_timestamp(raw: str) -> str:
         value = value[:-1] + "+00:00"
     elif "T" in value and "-" not in value[:10]:
         raise ValueError("timezone required for compact datetime")
-    if value.endswith("Z"):
-        value = value[:-1] + "+00:00"
     dt = datetime.fromisoformat(value)
     if dt.tzinfo is None:
         raise ValueError("timezone required for datetime")
@@ -250,7 +248,7 @@ def capture_calendar(
 
     current: dict[str, str] | None = None
     pending: list[tuple[str, str, str | None, dict[str, Any]]] = []
-    unsupported_tzid = 0
+    unsupported_calendar_features = 0
     unsupported_timestamp = 0
     for line in lines:
         if line == "BEGIN:VEVENT":
@@ -259,12 +257,10 @@ def capture_calendar(
         if line == "END:VEVENT" and current is not None:
             summary = current.get("SUMMARY", "calendar_event").strip()
             start = current.get("DTSTART")
-            if current.get("_UNSUPPORTED_TZID"):
-                unsupported_tzid += 1
-                current = None
-                continue
-            if current.get("_UNSUPPORTED_RECURRENCE"):
-                unsupported_tzid += 1
+            if current.get("_UNSUPPORTED_TZID") or current.get(
+                "_UNSUPPORTED_RECURRENCE"
+            ):
+                unsupported_calendar_features += 1
                 current = None
                 continue
             if start:
@@ -287,7 +283,7 @@ def capture_calendar(
             if key in {"RRULE", "RDATE", "EXDATE"}:
                 current["_UNSUPPORTED_RECURRENCE"] = key
             current[key] = value
-    if unsupported_tzid:
+    if unsupported_calendar_features:
         typer.echo(
             "error: calendar import does not support TZID or recurrence; "
             "export UTC single-instance .ics instead",
