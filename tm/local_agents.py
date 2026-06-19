@@ -33,6 +33,7 @@ AGENT_CONFIG_PATH = default_data_dir() / "web-config.json"
 ROUTEABLE_BACKENDS = frozenset(
     {"anthropic", "codex", "claude-code", "gemini", "kimchi"}
 )
+PREFERRED_LOCAL_AGENTS = ("codex", "claude-code", "gemini", "kimchi")
 
 
 @dataclass(frozen=True)
@@ -125,6 +126,9 @@ AGENT_DEFINITIONS: tuple[AgentDefinition, ...] = (
         notes="Tracked as local orchestration status until its gateway is healthy.",
     ),
 )
+AGENT_DEFINITIONS_BY_ID = {
+    definition.agent_id: definition for definition in AGENT_DEFINITIONS
+}
 
 
 def load_agent_config(config_path: Path | None = None) -> dict[str, Any]:
@@ -147,8 +151,6 @@ def save_selected_agent(
 ) -> dict[str, Any]:
     """Persist selected UI agent under the XDG data directory."""
 
-    if agent_id not in {definition.agent_id for definition in AGENT_DEFINITIONS}:
-        raise ValueError(f"unknown agent_id: {agent_id!r}")
     definition = _definition(agent_id)
     if definition.backend not in ROUTEABLE_BACKENDS:
         raise ValueError(f"agent is not routeable by tm yet: {agent_id!r}")
@@ -181,7 +183,7 @@ def default_selected_agent(config_path: Path | None = None) -> str:
     if env_backend in ROUTEABLE_BACKENDS:
         return str(env_backend)
 
-    for candidate in ("codex", "claude-code", "gemini", "kimchi"):
+    for candidate in PREFERRED_LOCAL_AGENTS:
         definition = _definition(candidate)
         if definition.command and shutil.which(definition.command):
             return candidate
@@ -200,43 +202,35 @@ def probe_agents(config_path: Path | None = None) -> list[dict[str, Any]]:
 
 
 def _definition(agent_id: str) -> AgentDefinition:
-    for definition in AGENT_DEFINITIONS:
-        if definition.agent_id == agent_id:
-            return definition
-    raise ValueError(f"unknown agent_id: {agent_id!r}")
+    try:
+        return AGENT_DEFINITIONS_BY_ID[agent_id]
+    except KeyError as exc:
+        raise ValueError(f"unknown agent_id: {agent_id!r}") from exc
 
 
 def _probe_definition(definition: AgentDefinition, *, selected: str) -> AgentStatus:
     if definition.command is None:
         configured = bool(os.environ.get("TM_LLM_API_KEY"))
-        return AgentStatus(
-            agent_id=definition.agent_id,
-            label=definition.label,
-            backend=definition.backend,
+        return _agent_status(
+            definition,
+            selected=selected,
             command=None,
-            routeable=definition.routeable,
             installed=True,
             version=None,
-            selected=definition.agent_id == selected,
             healthy=configured,
             status="configured" if configured else "TM_LLM_API_KEY not set",
-            notes=definition.notes,
         )
 
     binary = shutil.which(definition.command)
     if binary is None:
-        return AgentStatus(
-            agent_id=definition.agent_id,
-            label=definition.label,
-            backend=definition.backend,
+        return _agent_status(
+            definition,
+            selected=selected,
             command=definition.command,
-            routeable=definition.routeable,
             installed=False,
             version=None,
-            selected=definition.agent_id == selected,
             healthy=False,
             status="not installed",
-            notes=definition.notes,
         )
 
     version = _read_version(binary, definition.version_args)
@@ -249,13 +243,36 @@ def _probe_definition(definition: AgentDefinition, *, selected: str) -> AgentSta
         healthy = bool(gateway and gateway.get("healthy"))
         status = "gateway healthy" if healthy else "gateway unavailable"
 
+    return _agent_status(
+        definition,
+        selected=selected,
+        command=binary,
+        installed=True,
+        version=version,
+        healthy=healthy,
+        status=status,
+        gateway=gateway,
+    )
+
+
+def _agent_status(
+    definition: AgentDefinition,
+    *,
+    selected: str,
+    command: str | None,
+    installed: bool,
+    version: str | None,
+    healthy: bool,
+    status: str,
+    gateway: dict[str, Any] | None = None,
+) -> AgentStatus:
     return AgentStatus(
         agent_id=definition.agent_id,
         label=definition.label,
         backend=definition.backend,
-        command=binary,
+        command=command,
         routeable=definition.routeable,
-        installed=True,
+        installed=installed,
         version=version,
         selected=definition.agent_id == selected,
         healthy=healthy,

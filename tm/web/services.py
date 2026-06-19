@@ -53,6 +53,15 @@ __all__ = [
     "selected_agent_params",
 ]
 
+CAPABILITY_MODULES = {
+    "capture": "tm.commands.capture",
+    "dashboard_command": "tm.commands.dashboard",
+    "export": "tm.commands.export",
+    "privacy": "tm.commands.privacy",
+    "reextract": "tm.commands.reextract",
+    "encryption": "tm.security",
+}
+
 
 def ensure_web_db(db_path: Path | None = None) -> Path:
     """Apply migrations and return the database path the UI should use."""
@@ -94,18 +103,18 @@ def build_status(
 def build_capabilities() -> dict[str, Any]:
     """Report which branch-dependent UI panels can perform real actions."""
 
-    return {
-        "capture": _module_available("tm.commands.capture"),
-        "dashboard_command": _module_available("tm.commands.dashboard"),
-        "export": _module_available("tm.commands.export"),
-        "privacy": _module_available("tm.commands.privacy"),
-        "reextract": _module_available("tm.commands.reextract"),
-        "encryption": _module_available("tm.security"),
-        "variants_trend": True,
-        "feature_branch_contract": (
-            "feature/capture-dashboard-export-privacy-daemon-eval"
-        ),
+    capabilities: dict[str, Any] = {
+        name: _module_available(module) for name, module in CAPABILITY_MODULES.items()
     }
+    capabilities.update(
+        {
+            "variants_trend": True,
+            "feature_branch_contract": (
+                "feature/capture-dashboard-export-privacy-daemon-eval"
+            ),
+        }
+    )
+    return capabilities
 
 
 def agent_selection(
@@ -130,11 +139,10 @@ def selected_agent_params(config_path: Path | None = None) -> dict[str, str | No
     config = load_agent_config(config_path)
     agent_id = default_selected_agent(config_path)
     backend = agent_id if agent_id in ROUTEABLE_BACKENDS else None
-    model = config.get("selected_model")
     return {
         "agent_id": agent_id,
         "backend": backend,
-        "model": model if isinstance(model, str) and model else None,
+        "model": _optional_str(config.get("selected_model")),
     }
 
 
@@ -228,10 +236,14 @@ def capture_telegram_json(
     db_path: Path | None,
     content: str,
 ) -> dict[str, Any]:
-    resolved_db = ensure_web_db(db_path)
-    with _temp_text_file(content, suffix=".json") as path:
-        _run_typer_command(capture_telegram, input_path=path, db_path=resolved_db)
-    return {"ok": True, "dashboard": build_dashboard(db_path=resolved_db)}
+    return _capture_input_path(
+        capture_telegram,
+        db_path=db_path,
+        content=content,
+        suffix=".json",
+        response_key="dashboard",
+        response_builder=build_dashboard,
+    )
 
 
 def capture_calendar_text(
@@ -239,10 +251,14 @@ def capture_calendar_text(
     db_path: Path | None,
     content: str,
 ) -> dict[str, Any]:
-    resolved_db = ensure_web_db(db_path)
-    with _temp_text_file(content, suffix=".ics") as path:
-        _run_typer_command(capture_calendar, input_path=path, db_path=resolved_db)
-    return {"ok": True, "dashboard": build_dashboard(db_path=resolved_db)}
+    return _capture_input_path(
+        capture_calendar,
+        db_path=db_path,
+        content=content,
+        suffix=".ics",
+        response_key="dashboard",
+        response_builder=build_dashboard,
+    )
 
 
 def capture_voice_text(
@@ -279,13 +295,14 @@ def run_backup(
     overwrite: bool = False,
 ) -> dict[str, Any]:
     resolved_db = ensure_web_db(db_path)
+    expanded_output = output_path.expanduser()
     _run_typer_command(
         backup,
         db_path=resolved_db,
-        output=output_path.expanduser(),
+        output=expanded_output,
         overwrite=overwrite,
     )
-    return {"ok": True, "output_path": str(output_path.expanduser())}
+    return {"ok": True, "output_path": str(expanded_output)}
 
 
 def privacy_redact(
@@ -380,6 +397,25 @@ def _suggestion_dict(record: Any) -> dict[str, Any]:
     return asdict(record)
 
 
+def _optional_str(value: Any) -> str | None:
+    return value if isinstance(value, str) and value else None
+
+
+def _capture_input_path(
+    command: Any,
+    *,
+    db_path: Path | None,
+    content: str,
+    suffix: str,
+    response_key: str,
+    response_builder: Any,
+) -> dict[str, Any]:
+    resolved_db = ensure_web_db(db_path)
+    with _temp_text_file(content, suffix=suffix) as path:
+        _run_typer_command(command, input_path=path, db_path=resolved_db)
+    return {"ok": True, response_key: response_builder(db_path=resolved_db)}
+
+
 def _directive_text(
     *,
     suggestion: dict[str, Any] | None,
@@ -427,14 +463,11 @@ def _table_count(
         ).fetchone()
         if exists is None:
             return 0
-        clauses: list[str] = []
-        params: list[Any] = []
-        if date_column and since:
-            clauses.append(f"{date_column} >= ?")
-            params.append(since)
-        if date_column and until:
-            clauses.append(f"{date_column} <= ?")
-            params.append(until)
+        clauses, params = _date_filters(
+            date_column=date_column,
+            since=since,
+            until=until,
+        )
         sql = f"SELECT COUNT(*) AS cnt FROM {table}"
         if clauses:
             sql += " WHERE " + " AND ".join(clauses)
@@ -442,6 +475,23 @@ def _table_count(
         return int(row["cnt"]) if row is not None else 0
     finally:
         conn.close()
+
+
+def _date_filters(
+    *,
+    date_column: str | None,
+    since: str | None,
+    until: str | None,
+) -> tuple[list[str], list[Any]]:
+    clauses: list[str] = []
+    params: list[Any] = []
+    if date_column and since:
+        clauses.append(f"{date_column} >= ?")
+        params.append(since)
+    if date_column and until:
+        clauses.append(f"{date_column} <= ?")
+        params.append(until)
+    return clauses, params
 
 
 def _run_typer_command(fn: Any, **kwargs: Any) -> None:

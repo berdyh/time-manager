@@ -53,6 +53,11 @@ def create_app(
     resolved_socket = socket_path or default_socket_path()
     resolved_static = static_dir or _default_static_dir()
 
+    def daemon_json(method: str, params: dict[str, Any]) -> JSONResponse:
+        result = _daemon_call(resolved_socket, method, params)
+        status_code = 200 if result.get("ok") else 503
+        return JSONResponse(result, status_code=status_code)
+
     async def status(_request: Any) -> JSONResponse:
         return JSONResponse(
             build_status(db_path=resolved_db, socket_path=resolved_socket)
@@ -83,19 +88,13 @@ def create_app(
 
     async def run_debrief(request: Any) -> JSONResponse:
         payload = await request.json()
+        try:
+            transcript = _required_str(payload, "transcript", nonblank=True)
+            case_date = _required_str(payload, "case_date")
+        except ValueError as exc:
+            return _bad_request(str(exc))
         params = selected_agent_params()
-        transcript = payload.get("transcript")
-        case_date = payload.get("case_date")
-        if not isinstance(transcript, str) or not transcript.strip():
-            return JSONResponse(
-                {"ok": False, "error": "transcript required"}, status_code=400
-            )
-        if not isinstance(case_date, str) or not case_date:
-            return JSONResponse(
-                {"ok": False, "error": "case_date required"}, status_code=400
-            )
-        result = _daemon_call(
-            resolved_socket,
+        return daemon_json(
             "run_debrief",
             {
                 "transcript": transcript,
@@ -104,19 +103,15 @@ def create_app(
                 "model": params["model"],
             },
         )
-        status_code = 200 if result.get("ok") else 503
-        return JSONResponse(result, status_code=status_code)
 
     async def suggest(request: Any) -> JSONResponse:
         payload = await request.json()
+        try:
+            case_date = _required_str(payload, "case_date")
+        except ValueError as exc:
+            return _bad_request(str(exc))
         params = selected_agent_params()
-        case_date = payload.get("case_date")
-        if not isinstance(case_date, str) or not case_date:
-            return JSONResponse(
-                {"ok": False, "error": "case_date required"}, status_code=400
-            )
-        result = _daemon_call(
-            resolved_socket,
+        return daemon_json(
             "propose_suggestion",
             {
                 "case_date": case_date,
@@ -125,31 +120,30 @@ def create_app(
                 "model": params["model"],
             },
         )
-        status_code = 200 if result.get("ok") else 503
-        return JSONResponse(result, status_code=status_code)
 
     async def capture_telegram_api(request: Any) -> JSONResponse:
         payload = await request.json()
-        content = payload.get("content")
-        if not isinstance(content, str) or not content.strip():
-            return _bad_request("content required")
+        try:
+            content = _required_str(payload, "content", nonblank=True)
+        except ValueError as exc:
+            return _bad_request(str(exc))
         return _json_result(capture_telegram_json, db_path=resolved_db, content=content)
 
     async def capture_calendar_api(request: Any) -> JSONResponse:
         payload = await request.json()
-        content = payload.get("content")
-        if not isinstance(content, str) or not content.strip():
-            return _bad_request("content required")
+        try:
+            content = _required_str(payload, "content", nonblank=True)
+        except ValueError as exc:
+            return _bad_request(str(exc))
         return _json_result(capture_calendar_text, db_path=resolved_db, content=content)
 
     async def capture_voice_api(request: Any) -> JSONResponse:
         payload = await request.json()
-        transcript = payload.get("transcript")
-        case_date = payload.get("case_date")
-        if not isinstance(transcript, str) or not transcript.strip():
-            return _bad_request("transcript required")
-        if not isinstance(case_date, str) or not case_date:
-            return _bad_request("case_date required")
+        try:
+            transcript = _required_str(payload, "transcript", nonblank=True)
+            case_date = _required_str(payload, "case_date")
+        except ValueError as exc:
+            return _bad_request(str(exc))
         return _json_result(
             capture_voice_text,
             db_path=resolved_db,
@@ -162,9 +156,10 @@ def create_app(
 
     async def backup_api(request: Any) -> JSONResponse:
         payload = await request.json()
-        output_path = payload.get("output_path")
-        if not isinstance(output_path, str) or not output_path:
-            return _bad_request("output_path required")
+        try:
+            output_path = _required_str(payload, "output_path")
+        except ValueError as exc:
+            return _bad_request(str(exc))
         overwrite = bool(payload.get("overwrite"))
         return _json_result(
             run_backup,
@@ -204,9 +199,10 @@ def create_app(
 
     async def reextract_api(request: Any) -> JSONResponse:
         payload = await request.json()
-        case_date = payload.get("case_date")
-        if not isinstance(case_date, str) or not case_date:
-            return _bad_request("case_date required")
+        try:
+            case_date = _required_str(payload, "case_date")
+        except ValueError as exc:
+            return _bad_request(str(exc))
         transcript = payload.get("transcript")
         transcript_str = transcript if isinstance(transcript, str) else None
         return _json_result(
@@ -276,6 +272,18 @@ def _bad_request(message: str) -> Any:
     from starlette.responses import JSONResponse
 
     return JSONResponse({"ok": False, "error": message}, status_code=400)
+
+
+def _required_str(
+    payload: dict[str, Any],
+    field: str,
+    *,
+    nonblank: bool = False,
+) -> str:
+    value = payload.get(field)
+    if not isinstance(value, str) or not value or (nonblank and not value.strip()):
+        raise ValueError(f"{field} required")
+    return value
 
 
 def _json_result(fn: Any, **kwargs: Any) -> Any:
