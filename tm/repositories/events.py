@@ -39,7 +39,7 @@ import re
 import sqlite3
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from tm.security import connect_sqlite, enable_wal_mode
 
@@ -278,6 +278,7 @@ class EventsRepository:
         case_date: str | None = None,
         case_goal_id: str | None = None,
         limit: int | None = None,
+        order: Literal["asc", "desc"] = "asc",
     ) -> list[dict[str, Any]]:
         """Return events matching the given filters.
 
@@ -303,7 +304,12 @@ class EventsRepository:
             Filter by ``case_goal_id`` column (goal-pursuit case lens).
         limit:
             Maximum number of rows to return.
+        order:
+            Timestamp ordering for the result set.
         """
+        if order not in {"asc", "desc"}:
+            raise ValueError("order must be 'asc' or 'desc'")
+
         clauses: list[str] = []
         params: list[Any] = []
 
@@ -343,7 +349,8 @@ class EventsRepository:
         )
         if clauses:
             sql += " WHERE " + " AND ".join(clauses)
-        sql += " ORDER BY timestamp ASC, event_id ASC"
+        direction = "DESC" if order == "desc" else "ASC"
+        sql += f" ORDER BY timestamp {direction}, event_id {direction}"
         if limit is not None:
             sql += " LIMIT ?"
             params.append(int(limit))

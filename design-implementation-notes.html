@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Time Manager UI Implementation Notes</title>
+  <style>
+    body {
+      margin: 0;
+      font-family: "Mona Sans", "IBM Plex Sans", system-ui, sans-serif;
+      background: #f4f1e8;
+      color: #141914;
+      line-height: 1.55;
+    }
+    main {
+      max-width: 920px;
+      margin: 0 auto;
+      padding: 40px 20px 64px;
+    }
+    h1, h2 {
+      line-height: 1.15;
+    }
+    h1 {
+      margin: 0 0 8px;
+      font-size: 2rem;
+    }
+    h2 {
+      margin: 32px 0 12px;
+      font-size: 1.2rem;
+      border-bottom: 1px solid #cfc8b8;
+      padding-bottom: 8px;
+    }
+    p, li {
+      color: #2a302a;
+    }
+    code {
+      font-family: "Commit Mono", "JetBrains Mono", monospace;
+      background: #e6e0d1;
+      border-radius: 4px;
+      padding: 1px 4px;
+    }
+    .meta {
+      color: #677064;
+      margin-top: 0;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Time Manager UI Implementation Notes</h1>
+    <p class="meta">Maintained during the <code>create-ui-layer</code> implementation.</p>
+
+    <h2>Design Decisions</h2>
+    <ul>
+      <li>The UI is implemented as a local cockpit rather than a calendar-first dashboard. The first screen centers one current directive, the selected local agent, daemon state, cost, and evidence.</li>
+      <li>The web surface uses a Vite React frontend and a local Python API served by <code>tm web</code>. Web dependencies are optional so CLI-only installs remain light.</li>
+      <li>The implementation initially kept the dirty capture/privacy/dashboard branch as a contract reference; after the feature work was completed, those modules were imported and wired into real API/UI controls.</li>
+      <li>The completed capture/privacy/dashboard branch was imported into this UI branch after the initial UI implementation. The placeholders are now real API routes and visible UI controls.</li>
+      <li>Selected UI agent state is stored under the existing XDG data directory as <code>web-config.json</code>, not in tracked files or API-key environment variables.</li>
+      <li>The frontend design pass interprets the product as a private local command center, not a generic SaaS dashboard. The visual language now uses graphite surfaces, off-white data fields, trace-green/amber/red operational accents, compact mono labels, and a trace-spine motif tied to local event history.</li>
+    </ul>
+
+    <h2>Deviations</h2>
+    <ul>
+      <li>The dashboard panel includes a lightweight summary from existing repository APIs even before the capture branch is merged. The richer capture-branch dashboard remains feature-gated.</li>
+      <li>OpenClaw is shown as gateway/status context only. It is not a routeable LLM backend until the local gateway is healthy and a stable request contract is available.</li>
+    </ul>
+
+    <h2>Tradeoffs</h2>
+    <ul>
+      <li>Gemini and Kimchi adapters use prompt-enforced JSON extraction rather than native tool-use. This matches the existing Codex CLI limitation and keeps the shared <code>LLMClient</code> protocol stable.</li>
+      <li>The UI uses the daemon for LLM-backed write operations. If the daemon is down, the API returns a precise status instead of silently creating a second writer path.</li>
+      <li>Capture uploads send file contents as JSON and the backend writes temporary files so the UI can reuse the feature branch's tested CLI parsers. This avoids a multipart dependency and keeps command behavior single-sourced.</li>
+      <li>The frontend uses plain CSS rather than adding a component framework. That keeps the visual system explicit and avoids importing a generic SaaS look.</li>
+      <li>The design pass kept the existing React component boundaries instead of introducing a design-system dependency. This made the change mostly CSS plus small label updates, but it means future screens should reuse the same tokens and panel spans manually.</li>
+      <li>Running <code>npm audit fix</code> was intentionally skipped after install reported one low-severity advisory, because it can rewrite dependency choices outside the UI implementation scope.</li>
+    </ul>
+
+    <h2>Open Questions</h2>
+    <ul>
+      <li>Confirm whether OpenClaw should become a first-class scheduler/debrief backend after its local gateway is repaired, or remain an orchestration surface around other agents.</li>
+      <li>After the capture/privacy/dashboard branch is merged, confirm whether the UI should expose file upload for Telegram and calendar imports or only command-triggered imports from local paths.</li>
+      <li>Current answer implemented browser file upload for Telegram JSON and calendar ICS by reading the file in the browser and sending the content to local API endpoints.</li>
+    </ul>
+
+    <h2>Verification Log</h2>
+    <ul>
+      <li>Started from a clean <code>create-ui-layer</code> worktree at <code>f47f832</code>; the dirty feature branch was left untouched.</li>
+      <li><code>python -m ruff check .</code> passed.</li>
+      <li><code>python -m ruff format --check .</code> passed.</li>
+      <li><code>python -m mypy tm</code> passed.</li>
+      <li><code>python -m pytest</code> passed with 715 passed, 1 skipped, and 1 Python 3.14 deprecation warning from pytest-asyncio after importing the completed feature branch.</li>
+      <li><code>npm run build</code> passed for the Vite frontend.</li>
+      <li>Local API smoke check passed at <code>http://127.0.0.1:8765/api/status</code> and <code>/api/now</code>.</li>
+      <li>Post-merge API smoke check passed for <code>/api/capabilities</code>, <code>/api/dashboard</code>, and <code>/api/export</code>; capabilities now report capture, dashboard, export, privacy, reextract, encryption, and variant trend as available.</li>
+      <li>Local frontend smoke check passed at <code>http://127.0.0.1:5174/</code>; port <code>5173</code> was already in use.</li>
+      <li>Frontend visual refresh verified with <code>npm run build</code> and Chromium screenshots at 1440×1000 and 390×900. The mobile viewport keeps body content within the viewport; the status strip remains horizontally scrollable by design.</li>
+    </ul>
+  </main>
+</body>
+</html>

@@ -254,6 +254,13 @@ class SQLiteStore:
                 ")"
             )
 
+    def _schema_migrations_exists(self, cur: sqlite3.Cursor) -> bool:
+        cur.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type='table' AND name='schema_migrations'"
+        )
+        return cur.fetchone() is not None
+
     def _discover_migrations(self) -> list[tuple[int, Path, str, bytes]]:
         """Return ``[(version, path, checksum, body), ...]`` sorted by version."""
         out: list[tuple[int, Path, str, bytes]] = []
@@ -274,11 +281,7 @@ class SQLiteStore:
     def applied_migrations(self) -> list[int]:
         cur = self._conn.cursor()
         try:
-            cur.execute(
-                "SELECT name FROM sqlite_master "
-                "WHERE type='table' AND name='schema_migrations'"
-            )
-            if cur.fetchone() is None:
+            if not self._schema_migrations_exists(cur):
                 return []
             cur.execute("SELECT version FROM schema_migrations ORDER BY version")
             return [int(row[0]) for row in cur.fetchall()]
@@ -288,11 +291,7 @@ class SQLiteStore:
     def _recorded_checksums(self) -> dict[int, str]:
         cur = self._conn.cursor()
         try:
-            cur.execute(
-                "SELECT name FROM sqlite_master "
-                "WHERE type='table' AND name='schema_migrations'"
-            )
-            if cur.fetchone() is None:
+            if not self._schema_migrations_exists(cur):
                 return {}
             cur.execute("SELECT version, checksum FROM schema_migrations")
             return {int(r[0]): str(r[1]) for r in cur.fetchall()}

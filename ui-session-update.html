@@ -2,326 +2,472 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>UI Session Update</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>UI Session Update Flow</title>
   <style>
     :root {
-      color-scheme: light;
-      --bg: #f7f8fb;
-      --panel: #ffffff;
-      --ink: #18202f;
-      --muted: #667085;
-      --line: #a8b3c7;
-      --ready: #1f7a4d;
-      --pending: #9a5b13;
-      --border: #d4dbe8;
+      color-scheme: dark;
+      --bg: #080a0b;
+      --panel: #121716;
+      --panel-2: #19211e;
+      --field: #edf2e6;
+      --ink: #10140f;
+      --text: #eef4ec;
+      --muted: #9aa79f;
+      --line: #31413a;
+      --trace: #65d6ad;
+      --amber: #f1c85b;
+      --red: #e2604f;
     }
 
-    * { box-sizing: border-box; }
+    * {
+      box-sizing: border-box;
+    }
 
     body {
       margin: 0;
-      background: var(--bg);
-      color: var(--ink);
-      font: 15px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background:
+        repeating-linear-gradient(90deg, rgba(101, 214, 173, 0.04) 0 1px, transparent 1px 72px),
+        repeating-linear-gradient(0deg, rgba(237, 242, 230, 0.035) 0 1px, transparent 1px 72px),
+        var(--bg);
+      color: var(--text);
+      font-family: "Inter Variable", "Mona Sans", "IBM Plex Sans", system-ui, sans-serif;
+      line-height: 1.5;
     }
 
     main {
-      max-width: 1180px;
+      max-width: 1220px;
       margin: 0 auto;
-      padding: 32px 20px 48px;
+      padding: 32px 18px 72px;
+    }
+
+    header {
+      display: grid;
+      gap: 10px;
+      margin-bottom: 24px;
+      padding-bottom: 18px;
+      border-bottom: 1px solid var(--line);
     }
 
     h1 {
-      margin: 0 0 8px;
-      font-size: 30px;
-      line-height: 1.1;
+      margin: 0;
+      font-size: clamp(2rem, 5vw, 4.5rem);
+      line-height: 0.98;
       letter-spacing: 0;
     }
 
-    .summary {
-      margin: 0 0 24px;
+    h2,
+    h3 {
+      margin: 0;
+      letter-spacing: 0;
+    }
+
+    p {
+      margin: 0;
       color: var(--muted);
-      max-width: 780px;
     }
 
-    .legend {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 10px 18px;
-      margin: 0 0 24px;
-      color: var(--muted);
-      font-size: 13px;
+    code {
+      padding: 1px 5px;
+      border-radius: 4px;
+      background: #1d2723;
+      color: var(--field);
+      font-family: "IBM Plex Mono", "Commit Mono", "JetBrains Mono", monospace;
+      font-size: 0.92em;
     }
 
-    .legend span {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-    }
-
-    .dot {
-      width: 10px;
-      height: 10px;
-      border-radius: 50%;
-      background: var(--pending);
-    }
-
-    .dot.ready { background: var(--ready); }
-
-    .flow {
+    .meta-grid {
       display: grid;
       grid-template-columns: repeat(4, minmax(0, 1fr));
-      gap: 22px;
-      position: relative;
+      gap: 10px;
+      margin-top: 14px;
     }
 
-    .stage {
-      display: grid;
-      gap: 16px;
-      align-content: start;
+    .meta {
+      min-height: 72px;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--panel);
     }
 
-    .stage-title {
+    .meta span {
+      display: block;
       color: var(--muted);
-      font-weight: 700;
-      font-size: 12px;
+      font-family: "IBM Plex Mono", "Commit Mono", "JetBrains Mono", monospace;
+      font-size: 11px;
       text-transform: uppercase;
-      letter-spacing: 0.08em;
+    }
+
+    .meta strong {
+      display: block;
+      margin-top: 5px;
+      color: var(--text);
+    }
+
+    .flow {
+      position: relative;
+      display: grid;
+      grid-template-columns: repeat(12, minmax(0, 1fr));
+      gap: 14px;
+      margin-top: 24px;
+    }
+
+    .flow::before {
+      position: absolute;
+      top: 28px;
+      bottom: 28px;
+      left: 50%;
+      width: 2px;
+      content: "";
+      background: linear-gradient(var(--trace), rgba(101, 214, 173, 0));
+      opacity: 0.55;
     }
 
     .node {
       position: relative;
-      min-height: 170px;
+      grid-column: span 4;
+      min-height: 260px;
       padding: 16px;
-      background: var(--panel);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      box-shadow: 0 8px 24px rgba(31, 41, 55, 0.06);
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: rgba(18, 23, 22, 0.94);
+    }
+
+    .node.core {
+      grid-column: span 6;
+    }
+
+    .node.ui {
+      grid-column: span 8;
+    }
+
+    .node.docs {
+      grid-column: span 4;
     }
 
     .node::after {
-      content: "";
       position: absolute;
-      top: 50%;
-      right: -23px;
-      width: 23px;
-      border-top: 2px solid var(--line);
+      top: 26px;
+      right: -15px;
+      width: 14px;
+      height: 1px;
+      content: "";
+      background: var(--trace);
+      opacity: 0.75;
     }
 
-    .stage:last-child .node::after,
-    .node.terminal::after {
+    .node:nth-child(3n)::after,
+    .node:last-child::after {
       display: none;
     }
 
-    .node label {
-      display: flex;
-      align-items: flex-start;
+    .node-head {
+      display: grid;
+      grid-template-columns: 28px minmax(0, 1fr);
       gap: 10px;
-      margin: 0 0 8px;
-      font-weight: 800;
+      align-items: start;
+      margin-bottom: 12px;
     }
 
-    .node input {
-      width: 18px;
-      height: 18px;
-      margin: 1px 0 0;
-      accent-color: var(--ready);
-      flex: 0 0 auto;
+    input[type="checkbox"] {
+      width: 20px;
+      height: 20px;
+      margin: 3px 0 0;
+      accent-color: var(--trace);
+    }
+
+    .node h2 {
+      color: var(--text);
+      font-size: 1.05rem;
     }
 
     .node p {
-      margin: 0 0 10px 28px;
-      color: var(--muted);
+      margin-top: 4px;
+      font-size: 0.93rem;
     }
 
-    .files {
-      margin: 0 0 0 28px;
+    .paths {
+      display: grid;
+      gap: 5px;
+      margin: 12px 0;
+      padding: 10px;
+      border-radius: 6px;
+      background: #0d1110;
+    }
+
+    .paths code {
+      display: block;
+      overflow-wrap: anywhere;
+      background: transparent;
       padding: 0;
-      list-style: none;
-      color: #344054;
-      font-size: 13px;
-    }
-
-    .files li + li { margin-top: 3px; }
-
-    code {
-      background: #eef2f7;
-      border: 1px solid #dde5f1;
-      border-radius: 4px;
-      padding: 0 4px;
-      white-space: nowrap;
     }
 
     .status {
       display: inline-flex;
-      margin: 12px 0 0 28px;
-      padding: 3px 8px;
-      border-radius: 999px;
-      background: #fff7ed;
-      color: var(--pending);
+      align-items: center;
+      min-height: 28px;
+      padding: 4px 8px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      color: var(--muted);
+      font-family: "IBM Plex Mono", "Commit Mono", "JetBrains Mono", monospace;
       font-size: 12px;
-      font-weight: 700;
+      text-transform: uppercase;
     }
 
-    .status.ready {
-      background: #ecfdf3;
-      color: var(--ready);
+    .status.pending {
+      color: var(--amber);
     }
 
-    @media (max-width: 960px) {
-      .flow { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-      .stage:nth-child(2n) .node::after { display: none; }
+    .status.checked {
+      color: var(--trace);
     }
 
-    @media (max-width: 620px) {
-      main { padding: 24px 14px 36px; }
-      .flow { grid-template-columns: 1fr; }
-      .node::after { display: none; }
+    .legend,
+    .log {
+      margin-top: 24px;
+      padding: 16px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--panel);
+    }
+
+    .log ol {
+      margin: 12px 0 0;
+      padding-left: 22px;
+      color: var(--muted);
+    }
+
+    @media (max-width: 900px) {
+      .meta-grid,
+      .flow {
+        grid-template-columns: 1fr;
+      }
+
+      .flow::before,
+      .node::after {
+        display: none;
+      }
+
+      .node,
+      .node.core,
+      .node.ui,
+      .node.docs {
+        grid-column: auto;
+      }
     }
   </style>
 </head>
 <body>
   <main>
-    <h1>Session Implementation Flow</h1>
-    <p class="summary">
-      Branch <code>feature/capture-dashboard-export-privacy-daemon-eval</code>
-      split into code sections for the requested <code>@code-simplifier</code>
-      pass. A box is checked only after the section has been reviewed for
-      unnecessary complexity and any small simplifications have been handled.
-      Current status: all sections checked after subagent simplifier review.
-    </p>
-
-    <div class="legend" aria-label="Status legend">
-      <span><i class="dot" aria-hidden="true"></i> pending simplifier pass</span>
-      <span><i class="dot ready" aria-hidden="true"></i> simplified enough</span>
-    </div>
-
-    <section class="flow" aria-label="Code section simplification graph">
-      <div class="stage">
-        <div class="stage-title">Data Base</div>
-        <article class="node" id="sqlite-security">
-          <label><input type="checkbox" checked disabled>Private SQLite security</label>
-          <p>Owner-only SQLite creation, SQLCipher/keyring hooks, WAL hardening, and path normalization.</p>
-          <ul class="files">
-            <li><code>tm/security.py</code></li>
-            <li><code>tm/_paths.py</code>, stores, repositories</li>
-            <li><code>tests/test_security.py</code></li>
-          </ul>
-          <span class="status ready">simplified enough</span>
-        </article>
-
-        <article class="node" id="transcripts">
-          <label><input type="checkbox" checked disabled>Transcript retention</label>
-          <p>Raw transcript retention for replay, capture, and daemon-created debriefs.</p>
-          <ul class="files">
-            <li><code>migrations/0011_capture_transcripts_privacy.sql</code></li>
-            <li><code>tm/repositories/transcripts.py</code></li>
-            <li><code>tm/commands/debrief.py</code>, <code>tm/daemon.py</code></li>
-          </ul>
-          <span class="status ready">simplified enough</span>
-        </article>
+    <header>
+      <h1>UI Session Update Flow</h1>
+      <p>
+        Checklist of code sections created during the <code>create-ui-layer</code>
+        session. Boxes are checked only after the simplification pass for that
+        section is complete.
+      </p>
+      <div class="meta-grid">
+        <div class="meta"><span>Branch</span><strong>create-ui-layer</strong></div>
+        <div class="meta"><span>Base</span><strong>main..HEAD session commits</strong></div>
+        <div class="meta"><span>Mode</span><strong>section-by-section simplification</strong></div>
+        <div class="meta"><span>Tool note</span><strong>@code-simplifier unavailable; using bounded refactor workers</strong></div>
       </div>
+    </header>
 
-      <div class="stage">
-        <div class="stage-title">Inputs</div>
-        <article class="node" id="capture">
-          <label><input type="checkbox" checked disabled>Capture imports</label>
-          <p>Local Telegram JSON, UTC single-instance calendar files, and already-transcribed voice notes.</p>
-          <ul class="files">
-            <li><code>tm/commands/capture.py</code></li>
-            <li><code>tests/commands/test_capture_cli.py</code></li>
-          </ul>
-          <span class="status ready">simplified enough</span>
-        </article>
+    <section class="flow" aria-label="UI session graph checklist">
+      <article class="node core">
+        <div class="node-head">
+          <input type="checkbox" id="storage-security" checked>
+          <div>
+            <h2>01. Storage and Privacy Foundation</h2>
+            <p>Private SQLite/key handling, transcript retention, Kuzu projection marker, and repository connection hardening.</p>
+          </div>
+        </div>
+        <div class="paths">
+          <code>tm/security.py</code>
+          <code>tm/repositories/transcripts.py</code>
+          <code>migrations/0011_capture_transcripts_privacy.sql</code>
+          <code>tm/_paths.py, tm/stores/*, tm/repositories/*</code>
+        </div>
+        <span class="status checked">simplified and verified</span>
+      </article>
 
-        <article class="node" id="dashboard">
-          <label><input type="checkbox" checked disabled>Dashboard metrics</label>
-          <p>Compact local metrics for events, activities, transcripts, and suggestions.</p>
-          <ul class="files">
-            <li><code>tm/commands/dashboard.py</code></li>
-            <li><code>tests/commands/test_dashboard_export_cli.py</code></li>
-          </ul>
-          <span class="status ready">simplified enough</span>
-        </article>
+      <article class="node">
+        <div class="node-head">
+          <input type="checkbox" id="capture-imports" checked>
+          <div>
+            <h2>02. Capture Imports</h2>
+            <p>Telegram JSON, calendar ICS, and already-transcribed voice note import commands.</p>
+          </div>
+        </div>
+        <div class="paths">
+          <code>tm/commands/capture.py</code>
+          <code>tests/commands/test_capture_cli.py</code>
+        </div>
+        <span class="status checked">simplified and verified</span>
+      </article>
 
-        <article class="node" id="export-backup">
-          <label><input type="checkbox" checked disabled>Export and backup</label>
-          <p>Private JSON export, SQLite backup, source-output collision guards, and one-transaction reads.</p>
-          <ul class="files">
-            <li><code>tm/commands/export.py</code></li>
-            <li><code>tests/commands/test_dashboard_export_cli.py</code></li>
-          </ul>
-          <span class="status ready">simplified enough</span>
-        </article>
-      </div>
+      <article class="node">
+        <div class="node-head">
+          <input type="checkbox" id="operator-data" checked>
+          <div>
+            <h2>03. Dashboard, Export, Backup</h2>
+            <p>Local operator metrics, JSON export, SQLite backup, and output path safety checks.</p>
+          </div>
+        </div>
+        <div class="paths">
+          <code>tm/commands/dashboard.py</code>
+          <code>tm/commands/export.py</code>
+          <code>tests/commands/test_dashboard_export_privacy_cli.py</code>
+        </div>
+        <span class="status checked">simplified and verified</span>
+      </article>
 
-      <div class="stage">
-        <div class="stage-title">Privacy Loop</div>
-        <article class="node" id="encryption-cli">
-          <label><input type="checkbox" checked disabled>Encryption CLI</label>
-          <p>Status and key setup commands around optional SQLCipher/keyring support.</p>
-          <ul class="files">
-            <li><code>tm/commands/encryption.py</code></li>
-            <li><code>tests/commands/test_encryption_cli.py</code></li>
-          </ul>
-          <span class="status ready">simplified enough</span>
-        </article>
+      <article class="node">
+        <div class="node-head">
+          <input type="checkbox" id="privacy-encryption" checked>
+          <div>
+            <h2>04. Privacy and Encryption Commands</h2>
+            <p>Redact/forget workflows, privacy audit records, Kuzu purge safety, and optional key management.</p>
+          </div>
+        </div>
+        <div class="paths">
+          <code>tm/commands/privacy.py</code>
+          <code>tm/commands/encryption.py</code>
+          <code>tests/commands/test_encryption_cli.py</code>
+        </div>
+        <span class="status checked">simplified and verified</span>
+      </article>
 
-        <article class="node" id="privacy">
-          <label><input type="checkbox" checked disabled>Redact and forget</label>
-          <p>Strict selectors, audit rows, transcript/suggestion cleanup, Kuzu projection clearing, and purge warnings.</p>
-          <ul class="files">
-            <li><code>tm/commands/privacy.py</code></li>
-            <li><code>tests/commands/test_privacy_cli.py</code></li>
-          </ul>
-          <span class="status ready">simplified enough</span>
-        </article>
+      <article class="node">
+        <div class="node-head">
+          <input type="checkbox" id="reextract-debrief" checked>
+          <div>
+            <h2>05. Reextract and Debrief Retention</h2>
+            <p>Retained transcript replay, case date validation, and daemon debrief transcript persistence.</p>
+          </div>
+        </div>
+        <div class="paths">
+          <code>tm/commands/reextract.py</code>
+          <code>tm/commands/debrief.py</code>
+          <code>tm/daemon.py</code>
+        </div>
+        <span class="status checked">simplified and verified</span>
+      </article>
 
-        <article class="node" id="reextract">
-          <label><input type="checkbox" checked disabled>Reextract replay</label>
-          <p>Staged replay of retained transcripts, privacy fencing, and cost-ledger preservation.</p>
-          <ul class="files">
-            <li><code>tm/commands/reextract.py</code></li>
-            <li><code>tests/commands/test_debrief_cli.py</code></li>
-          </ul>
-          <span class="status ready">simplified enough</span>
-        </article>
-      </div>
+      <article class="node">
+        <div class="node-head">
+          <input type="checkbox" id="daemon-variants" checked>
+          <div>
+            <h2>06. Daemon, Variants, Eval Gates</h2>
+            <p>Detached daemon start preflights, variant trend comparison, and separate live-eval thresholds.</p>
+          </div>
+        </div>
+        <div class="paths">
+          <code>tm/commands/daemon.py</code>
+          <code>tm/commands/variants.py</code>
+          <code>tests/integration/eval_harness.py</code>
+        </div>
+        <span class="status checked">simplified and verified</span>
+      </article>
 
-      <div class="stage">
-        <div class="stage-title">Operations</div>
-        <article class="node" id="daemon">
-          <label><input type="checkbox" checked disabled>Daemon detaching</label>
-          <p>POSIX double-fork detach, explicit path preflights, and foreground default preservation.</p>
-          <ul class="files">
-            <li><code>tm/commands/daemon.py</code>, <code>tm/daemon.py</code></li>
-            <li><code>tests/commands/test_daemon_cli.py</code></li>
-          </ul>
-          <span class="status ready">simplified enough</span>
-        </article>
+      <article class="node">
+        <div class="node-head">
+          <input type="checkbox" id="llm-adapters" checked>
+          <div>
+            <h2>07. Local LLM Adapters</h2>
+            <p>Shared subprocess JSON extraction plus Gemini/Kimchi adapter routing through the existing LLM protocol.</p>
+          </div>
+        </div>
+        <div class="paths">
+          <code>tm/llm/_subprocess_json.py</code>
+          <code>tm/llm/gemini_adapter.py</code>
+          <code>tm/llm/kimchi_adapter.py</code>
+          <code>tm/llm/factory.py</code>
+        </div>
+        <span class="status checked">simplified and verified</span>
+      </article>
 
-        <article class="node" id="variants-eval">
-          <label><input type="checkbox" checked disabled>Variant trends and eval gates</label>
-          <p>Previous-window trend labels plus separate live-LLM eval thresholds.</p>
-          <ul class="files">
-            <li><code>tm/commands/variants.py</code></li>
-            <li><code>tests/integration/eval_harness.py</code></li>
-            <li><code>tests/commands/test_variants_cli.py</code></li>
-          </ul>
-          <span class="status ready">simplified enough</span>
-        </article>
+      <article class="node">
+        <div class="node-head">
+          <input type="checkbox" id="agent-registry" checked>
+          <div>
+            <h2>08. Local Agent Registry</h2>
+            <p>Discovery, status, selected-agent persistence, and routeability metadata for local coding agents.</p>
+          </div>
+        </div>
+        <div class="paths">
+          <code>tm/local_agents.py</code>
+          <code>tests/web/test_services.py</code>
+        </div>
+        <span class="status checked">simplified and verified</span>
+      </article>
 
-        <article class="node terminal" id="cli-docs">
-          <label><input type="checkbox" checked disabled>CLI wiring and notes</label>
-          <p>Command registration, release docs, backlog updates, and implementation decision ledger.</p>
-          <ul class="files">
-            <li><code>tm/cli.py</code>, <code>tm/commands/_shared.py</code></li>
-            <li><code>README.md</code>, <code>docs/release/v1.md</code></li>
-            <li><code>future-implementation-with-autoplan-notes.html</code></li>
-          </ul>
-          <span class="status ready">simplified enough</span>
-        </article>
-      </div>
+      <article class="node core">
+        <div class="node-head">
+          <input type="checkbox" id="web-api" checked>
+          <div>
+            <h2>09. Local Web API</h2>
+            <p>Starlette API routes, service layer, capture/privacy/debrief bridge, and <code>tm web</code> command wiring.</p>
+          </div>
+        </div>
+        <div class="paths">
+          <code>tm/web/app.py</code>
+          <code>tm/web/services.py</code>
+          <code>tm/commands/web.py</code>
+          <code>tests/commands/test_web_cli.py</code>
+        </div>
+        <span class="status checked">simplified and verified</span>
+      </article>
+
+      <article class="node ui">
+        <div class="node-head">
+          <input type="checkbox" id="frontend-cockpit" checked>
+          <div>
+            <h2>10. Frontend Cockpit</h2>
+            <p>React app shell, agent switchboard, directive panel, local ledger, capture, privacy, and debrief controls.</p>
+          </div>
+        </div>
+        <div class="paths">
+          <code>frontend/src/main.tsx</code>
+          <code>frontend/src/styles.css</code>
+          <code>frontend/package.json, vite.config.ts, tsconfig.json</code>
+        </div>
+        <span class="status checked">simplified and verified</span>
+      </article>
+
+      <article class="node docs">
+        <div class="node-head">
+          <input type="checkbox" id="docs-notes" checked>
+          <div>
+            <h2>11. Docs and Notes</h2>
+            <p>README/release docs and implementation notes documenting the UI, local agent, and operator-surface decisions.</p>
+          </div>
+        </div>
+        <div class="paths">
+          <code>README.md</code>
+          <code>docs/release/v1.md</code>
+          <code>design-implementation-notes.html</code>
+          <code>ui-session-update.html</code>
+        </div>
+        <span class="status checked">simplified and verified</span>
+      </article>
+    </section>
+
+    <section class="log">
+      <h2>Simplification Run Log</h2>
+      <p>This section will be updated as each graph node is reviewed or simplified.</p>
+      <ol>
+        <li>Created section inventory from <code>git log --reverse main..HEAD</code> and <code>git diff --name-status main..HEAD</code>.</li>
+        <li><code>@code-simplifier</code> was not exposed by available tools, so four bounded simplification workers were dispatched across frontend, web/API, CLI operator, and backend/LLM ownership sets.</li>
+        <li>Frontend cockpit simplified API path handling, state loading, error formatting, repeated POST actions, rail items, status pills, and CSS font/grid tokens.</li>
+        <li>Web/API and local-agent sections simplified agent lookup, status construction, request validation, daemon response handling, capability checks, capture-file wrapping, model normalization, and date filters.</li>
+        <li>CLI operator sections simplified repeated database preparation, CLI error handling, transcript file reading, privacy cleanup, and command output helpers.</li>
+        <li>Storage/security, daemon, and LLM sections simplified subprocess JSON execution, adapter prompt/usage parsing, daemon backend request setup, SQLCipher probing, and migration table checks.</li>
+        <li>Verification passed: <code>python -m ruff check .</code>, <code>python -m mypy tm</code>, <code>python -m ruff format --check .</code>, <code>python -m pytest</code>, and <code>npm run build</code>.</li>
+      </ol>
     </section>
   </main>
 </body>
