@@ -187,6 +187,7 @@ function App() {
       <nav className="rail" aria-label="Primary">
         <div className="mark">
           <CircleDot size={18} />
+          <span>tm</span>
         </div>
         <a className="rail-item active" href="#now" title="Now">
           <Gauge size={18} />
@@ -398,7 +399,7 @@ function AgentDeck({
     <article className="panel agent-panel" id="agents">
       <div className="panel-title">
         <Bot size={17} />
-        <h2>Agent Deck</h2>
+        <h2>Agent Switchboard</h2>
       </div>
       <div className="agent-list">
         {agents.map((agent) => (
@@ -427,7 +428,7 @@ function TimelinePanel({ now }: { now: NowPayload | null }) {
     <article className="panel timeline-panel" id="plan">
       <div className="panel-title">
         <CalendarClock size={17} />
-        <h2>Now Line</h2>
+        <h2>Trace Spine</h2>
       </div>
       <div className="trace-list">
         {events.length === 0 ? (
@@ -461,7 +462,7 @@ function DataPanel({
     <article className="panel data-panel" id="data">
       <div className="panel-title">
         <Database size={17} />
-        <h2>Data</h2>
+        <h2>Local Ledger</h2>
       </div>
       <div className="metric-grid">
         <Metric label="Events" value={String(dashboard?.events ?? 0)} />
@@ -526,7 +527,7 @@ function CapturePanel({
     <article className="panel capture-panel">
       <div className="panel-title">
         <Upload size={17} />
-        <h2>Capture</h2>
+        <h2>Intake</h2>
       </div>
       <div className="file-actions">
         <FileButton label="Telegram JSON" accept=".json,application/json" onFile={onTelegram} />
@@ -573,7 +574,7 @@ function PrivacyPanel({
     <article className="panel privacy-panel">
       <div className="panel-title">
         <Shield size={17} />
-        <h2>Privacy</h2>
+        <h2>Privacy Lock</h2>
       </div>
       <div className="segmented">
         <button
@@ -664,7 +665,7 @@ function DebriefPanel({
     <article className="panel debrief-panel" id="debrief">
       <div className="panel-title">
         <MessageSquareText size={17} />
-        <h2>Debrief</h2>
+        <h2>Debrief Console</h2>
       </div>
       <textarea
         aria-label="Debrief transcript"

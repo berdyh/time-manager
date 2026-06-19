@@ -57,6 +57,7 @@
       <li>The implementation initially kept the dirty capture/privacy/dashboard branch as a contract reference; after the feature work was completed, those modules were imported and wired into real API/UI controls.</li>
       <li>The completed capture/privacy/dashboard branch was imported into this UI branch after the initial UI implementation. The placeholders are now real API routes and visible UI controls.</li>
       <li>Selected UI agent state is stored under the existing XDG data directory as <code>web-config.json</code>, not in tracked files or API-key environment variables.</li>
+      <li>The frontend design pass interprets the product as a private local command center, not a generic SaaS dashboard. The visual language now uses graphite surfaces, off-white data fields, trace-green/amber/red operational accents, compact mono labels, and a trace-spine motif tied to local event history.</li>
     </ul>
 
     <h2>Deviations</h2>
@@ -71,6 +72,7 @@
       <li>The UI uses the daemon for LLM-backed write operations. If the daemon is down, the API returns a precise status instead of silently creating a second writer path.</li>
       <li>Capture uploads send file contents as JSON and the backend writes temporary files so the UI can reuse the feature branch's tested CLI parsers. This avoids a multipart dependency and keeps command behavior single-sourced.</li>
       <li>The frontend uses plain CSS rather than adding a component framework. That keeps the visual system explicit and avoids importing a generic SaaS look.</li>
+      <li>The design pass kept the existing React component boundaries instead of introducing a design-system dependency. This made the change mostly CSS plus small label updates, but it means future screens should reuse the same tokens and panel spans manually.</li>
       <li>Running <code>npm audit fix</code> was intentionally skipped after install reported one low-severity advisory, because it can rewrite dependency choices outside the UI implementation scope.</li>
     </ul>
 
@@ -92,6 +94,7 @@
       <li>Local API smoke check passed at <code>http://127.0.0.1:8765/api/status</code> and <code>/api/now</code>.</li>
       <li>Post-merge API smoke check passed for <code>/api/capabilities</code>, <code>/api/dashboard</code>, and <code>/api/export</code>; capabilities now report capture, dashboard, export, privacy, reextract, encryption, and variant trend as available.</li>
       <li>Local frontend smoke check passed at <code>http://127.0.0.1:5174/</code>; port <code>5173</code> was already in use.</li>
+      <li>Frontend visual refresh verified with <code>npm run build</code> and Chromium screenshots at 1440×1000 and 390×900. The mobile viewport keeps body content within the viewport; the status strip remains horizontally scrollable by design.</li>
     </ul>
   </main>
 </body>
