@@ -7,11 +7,12 @@ from typing import Annotated
 
 import typer
 
-from tm._paths import default_db_path
 from tm.agents.debrief import DebriefAgent, DebriefResult, DuplicateSummaryError
 from tm.commands._shared import (
     DbPathOption,
-    ensure_migrations,
+    cli_error,
+    prepare_db,
+    read_text_file,
     require_api_key,
     utc_today,
     validate_case_date,
@@ -40,23 +41,17 @@ def _read_transcript(
 ) -> str:
     has_file = transcript_file is not None
     if has_file == from_stdin:
-        typer.echo(
-            "error: exactly one input source is required: "
-            "--transcript-file or --from-stdin",
-            err=True,
+        cli_error(
+            "exactly one input source is required: --transcript-file or --from-stdin",
+            code=2,
         )
-        raise typer.Exit(2)
 
     if from_stdin:
         return typer.get_text_stream("stdin").read()
 
     if transcript_file is None:  # pragma: no cover - guarded above
         raise typer.Exit(2)
-    try:
-        return transcript_file.read_text(encoding="utf-8")
-    except OSError as exc:
-        typer.echo(f"error: could not read transcript file: {exc}", err=True)
-        raise typer.Exit(1) from exc
+    return read_text_file(transcript_file, "transcript file")
 
 
 def _format_summary(summary: dict[str, int]) -> str:
@@ -153,10 +148,9 @@ def debrief(
     )
     require_api_key("tm debrief")
 
-    resolved_db_path = db_path or default_db_path()
     resolved_case_date = validate_case_date(case_date or utc_today())
+    resolved_db_path = prepare_db(db_path)
 
-    ensure_migrations(resolved_db_path)
     agent = build_debrief_agent(
         db_path=resolved_db_path,
         model=model,

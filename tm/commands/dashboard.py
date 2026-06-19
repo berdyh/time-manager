@@ -7,8 +7,7 @@ from typing import Annotated, Any
 
 import typer
 
-from tm._paths import default_db_path
-from tm.commands._shared import DbPathOption, ensure_migrations
+from tm.commands._shared import DbPathOption, prepare_db
 from tm.models.outcome import OutcomeAggregator
 from tm.repositories.events import EventsRepository
 from tm.security import connect_sqlite
@@ -38,8 +37,7 @@ def dashboard(
     ] = None,
 ) -> None:
     """Print compact counts, outcomes, suggestions, and top activities."""
-    resolved_db = db_path or default_db_path()
-    ensure_migrations(resolved_db)
+    resolved_db = prepare_db(db_path)
 
     event_where = []
     params: list[Any] = []

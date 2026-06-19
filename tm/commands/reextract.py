@@ -8,11 +8,12 @@ from typing import Annotated, Any
 
 import typer
 
-from tm._paths import default_db_path
 from tm.agents.debrief import DuplicateSummaryError
 from tm.commands._shared import (
     DbPathOption,
-    ensure_migrations,
+    cli_error,
+    prepare_db,
+    read_required_text_file,
     require_api_key,
     validate_case_date,
 )
@@ -255,32 +256,23 @@ def reextract(
 ) -> None:
     """Replay a transcript in a staging DB, then replace prior debrief events."""
     if not case_date:
-        typer.echo("error: --case-date is required", err=True)
-        raise typer.Exit(2)
+        cli_error("--case-date is required", code=2)
     resolved_case_date = validate_case_date(case_date)
     require_api_key("tm reextract")
-    resolved_db = db_path or default_db_path()
-    ensure_migrations(resolved_db)
+    resolved_db = prepare_db(db_path)
     privacy_fence = _privacy_action_count(resolved_db)
 
     transcripts = TranscriptRepository(resolved_db)
     replacement_transcript: str | None = None
     if transcript_file is not None:
-        try:
-            replacement_transcript = transcript_file.read_text(encoding="utf-8")
-        except OSError as exc:
-            typer.echo(f"error: could not read transcript file: {exc}", err=True)
-            raise typer.Exit(1) from exc
-        if not replacement_transcript.strip():
-            typer.echo("error: transcript is empty", err=True)
-            raise typer.Exit(1)
+        replacement_transcript = read_required_text_file(
+            transcript_file,
+            read_description="transcript file",
+            empty_description="transcript",
+        )
     record = transcripts.get(resolved_case_date)
     if replacement_transcript is None and record is None:
-        typer.echo(
-            f"error: no retained transcript for case_date={resolved_case_date}",
-            err=True,
-        )
-        raise typer.Exit(1)
+        cli_error(f"no retained transcript for case_date={resolved_case_date}")
     transcript_text = (
         replacement_transcript
         if replacement_transcript is not None
@@ -311,8 +303,7 @@ def reextract(
                 _append_cost_rows(
                     resolved_db, _fetch_cost_rows_after(staging_db, cost_floor)
                 )
-                typer.echo(f"error: duplicate summary after cleanup: {exc}", err=True)
-                raise typer.Exit(1) from exc
+                cli_error(f"duplicate summary after cleanup: {exc}", cause=exc)
             except Exception:
                 _append_cost_rows(
                     resolved_db, _fetch_cost_rows_after(staging_db, cost_floor)
@@ -332,8 +323,7 @@ def reextract(
                 )
             except PrivacyFenceChangedError as exc:
                 _append_cost_rows(resolved_db, cost_rows)
-                typer.echo(f"error: {exc}", err=True)
-                raise typer.Exit(1) from exc
+                cli_error(str(exc), cause=exc)
             except Exception:
                 _append_cost_rows(resolved_db, cost_rows)
                 raise

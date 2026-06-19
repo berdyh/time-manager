@@ -11,8 +11,7 @@ from typing import Annotated, Any
 
 import typer
 
-from tm._paths import default_db_path
-from tm.commands._shared import DbPathOption, ensure_migrations
+from tm.commands._shared import DbPathOption, cli_error, prepare_db
 from tm.security import connect_sqlite, key_source_for_path
 
 export_app = typer.Typer(help="Export tm data as JSON.")
@@ -93,12 +92,9 @@ def _reject_source_output(source: Path, output: Path, command_name: str) -> None
     if any(
         _same_file_path(reserved, output) for reserved in _sqlite_reserved_paths(source)
     ):
-        typer.echo(
-            f"error: {command_name} output must differ from database path "
-            "and SQLite sidecars",
-            err=True,
+        cli_error(
+            f"{command_name} output must differ from database path and SQLite sidecars"
         )
-        raise typer.Exit(1)
 
 
 def _table_rows(conn: sqlite3.Connection, table: str) -> list[dict[str, Any]]:
@@ -135,8 +131,7 @@ def export_data(
     ] = None,
 ) -> None:
     """Export core tm tables as a single JSON object."""
-    resolved_db = db_path or default_db_path()
-    ensure_migrations(resolved_db)
+    resolved_db = prepare_db(db_path)
     if output is None:
         payload = _export_payload(resolved_db)
         text = json.dumps(payload, indent=2, sort_keys=True)
@@ -163,12 +158,10 @@ def backup(
     ] = False,
 ) -> None:
     """Create a SQLite backup using the SQLite online-backup API."""
-    resolved_db = db_path or default_db_path()
-    ensure_migrations(resolved_db)
+    resolved_db = prepare_db(db_path)
     _reject_source_output(resolved_db, output, "backup")
     if output.exists() and not overwrite:
-        typer.echo(f"error: backup exists: {output}", err=True)
-        raise typer.Exit(1)
+        cli_error(f"backup exists: {output}")
 
     key, _source = key_source_for_path(resolved_db)
     tmp_output = _create_private_temp_file(output)
