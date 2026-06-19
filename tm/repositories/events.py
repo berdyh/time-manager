@@ -39,7 +39,7 @@ import re
 import sqlite3
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from tm.security import connect_sqlite, enable_wal_mode
 
@@ -136,6 +136,12 @@ def _row_to_event(row: sqlite3.Row) -> dict[str, Any]:
     return out
 
 
+def _ensure_goal_exists(conn: sqlite3.Connection, goal_id: str) -> None:
+    row = conn.execute("SELECT 1 FROM goals WHERE goal_id = ?", (goal_id,)).fetchone()
+    if row is None:
+        raise ValueError(f"unknown goal: {goal_id!r}")
+
+
 class EventsRepository:
     """Repository for the ``events`` table.
 
@@ -225,17 +231,9 @@ class EventsRepository:
         conn = _open_conn(self._db_path)
         try:
             if advances_goal is not None:
-                row = conn.execute(
-                    "SELECT 1 FROM goals WHERE goal_id = ?", (advances_goal,)
-                ).fetchone()
-                if row is None:
-                    raise ValueError(f"unknown goal: {advances_goal!r}")
+                _ensure_goal_exists(conn, advances_goal)
             if case_goal_id is not None:
-                row = conn.execute(
-                    "SELECT 1 FROM goals WHERE goal_id = ?", (case_goal_id,)
-                ).fetchone()
-                if row is None:
-                    raise ValueError(f"unknown goal: {case_goal_id!r}")
+                _ensure_goal_exists(conn, case_goal_id)
 
             conn.execute(
                 "INSERT INTO events ("
@@ -280,6 +278,7 @@ class EventsRepository:
         case_date: str | None = None,
         case_goal_id: str | None = None,
         limit: int | None = None,
+        order: Literal["asc", "desc"] = "asc",
     ) -> list[dict[str, Any]]:
         """Return events matching the given filters.
 
@@ -305,7 +304,12 @@ class EventsRepository:
             Filter by ``case_goal_id`` column (goal-pursuit case lens).
         limit:
             Maximum number of rows to return.
+        order:
+            Timestamp ordering for the result set.
         """
+        if order not in {"asc", "desc"}:
+            raise ValueError("order must be 'asc' or 'desc'")
+
         clauses: list[str] = []
         params: list[Any] = []
 
@@ -345,7 +349,8 @@ class EventsRepository:
         )
         if clauses:
             sql += " WHERE " + " AND ".join(clauses)
-        sql += " ORDER BY timestamp ASC, event_id ASC"
+        direction = "DESC" if order == "desc" else "ASC"
+        sql += f" ORDER BY timestamp {direction}, event_id {direction}"
         if limit is not None:
             sql += " LIMIT ?"
             params.append(int(limit))

@@ -208,8 +208,7 @@ def build_now(
     active_goals = goals_repo.list(status="active")
     active_goal = _goal_dict(active_goals[0]) if active_goals else None
     recent_suggestions = telemetry_repo.list_recent(limit=1)
-    recent_events = events_repo.query_events(limit=8)
-    recent_events = list(reversed(recent_events))
+    recent_events = events_repo.query_events(limit=8, order="desc")
     case_dates = events_repo.list_distinct_case_dates()
     latest_case_date = case_dates[-1] if case_dates else None
     outcome = None

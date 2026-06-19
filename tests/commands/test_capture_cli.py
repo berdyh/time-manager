@@ -1,4 +1,4 @@
-"""CLI tests for capture, dashboard, export, backup, and privacy commands."""
+"""CLI tests for capture and transcript retention commands."""
 
 from __future__ import annotations
 

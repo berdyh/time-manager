@@ -19,17 +19,17 @@ from tm._paths import default_data_dir
 from tm.llm.factory import BACKEND_ENV
 
 __all__ = [
-    "AGENT_CONFIG_PATH",
     "AgentDefinition",
     "AgentStatus",
     "ROUTEABLE_BACKENDS",
     "default_selected_agent",
+    "default_agent_config_path",
     "load_agent_config",
     "probe_agents",
     "save_selected_agent",
 ]
 
-AGENT_CONFIG_PATH = default_data_dir() / "web-config.json"
+AGENT_CONFIG_FILENAME = "web-config.json"
 ROUTEABLE_BACKENDS = frozenset(
     {"anthropic", "codex", "claude-code", "gemini", "kimchi"}
 )
@@ -131,10 +131,16 @@ AGENT_DEFINITIONS_BY_ID = {
 }
 
 
+def default_agent_config_path() -> Path:
+    """Return the persisted web UI config path, creating the data dir lazily."""
+
+    return default_data_dir() / AGENT_CONFIG_FILENAME
+
+
 def load_agent_config(config_path: Path | None = None) -> dict[str, Any]:
     """Return persisted UI config, or an empty config when absent/malformed."""
 
-    path = config_path or AGENT_CONFIG_PATH
+    path = config_path or default_agent_config_path()
     try:
         raw = path.read_text(encoding="utf-8")
         data = json.loads(raw)
@@ -155,7 +161,7 @@ def save_selected_agent(
     if definition.backend not in ROUTEABLE_BACKENDS:
         raise ValueError(f"agent is not routeable by tm yet: {agent_id!r}")
 
-    path = config_path or AGENT_CONFIG_PATH
+    path = config_path or default_agent_config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     config = load_agent_config(path)
     config["selected_agent"] = agent_id

@@ -214,17 +214,7 @@ def test_debrief_cli_renders_summary(tmp_path: Path, monkeypatch) -> None:
 def test_debrief_cli_renders_friendly_message_on_duplicate_summary(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """The CLI must convert DuplicateSummaryError into a friendly exit-1 message.
-
-    DuplicateSummaryError fires when migration 0010's partial UNIQUE index
-    rejects a race-induced second debrief_summary INSERT for the same
-    case_date (post-/simplify the daemon's coarse write lock no longer
-    serialises LLM-backed handlers, so two concurrent ``run_debrief``
-    invocations can both pass the pre-call SELECT and collide at INSERT).
-
-    Operator-facing UX: print "Debrief skipped: a summary already exists
-    for case_date=YYYY-MM-DD..." and exit 1 — not a traceback, not exit 0.
-    """
+    """The CLI converts DuplicateSummaryError into a friendly exit-1 message."""
     from tm.agents.debrief import DuplicateSummaryError
     from tm.commands import debrief as debrief_cmd
 
@@ -245,10 +235,7 @@ def test_debrief_cli_renders_friendly_message_on_duplicate_summary(
         detail="UNIQUE constraint failed: events.case_date",
     )
 
-    with (
-        patch.object(debrief_cmd, "build_llm_client", return_value=Mock()),
-        patch.object(debrief_cmd, "DebriefAgent", return_value=raising_agent),
-    ):
+    with patch.object(debrief_cmd, "build_debrief_agent", return_value=raising_agent):
         result = _invoke_debrief(
             "--case-date",
             "2026-05-15",

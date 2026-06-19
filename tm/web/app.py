@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import secrets
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +29,8 @@ from tm.web.services import (
 
 __all__ = ["create_app"]
 
+_WEB_TOKEN_HEADER = "x-tm-web-token"
+
 
 def create_app(
     *,
@@ -52,6 +55,7 @@ def create_app(
     resolved_db = ensure_web_db(db_path or default_db_path())
     resolved_socket = socket_path or default_socket_path()
     resolved_static = static_dir or _default_static_dir()
+    web_token = secrets.token_urlsafe(32)
 
     def daemon_json(method: str, params: dict[str, Any]) -> JSONResponse:
         result = _daemon_call(resolved_socket, method, params)
@@ -59,9 +63,9 @@ def create_app(
         return JSONResponse(result, status_code=status_code)
 
     async def status(_request: Any) -> JSONResponse:
-        return JSONResponse(
-            build_status(db_path=resolved_db, socket_path=resolved_socket)
-        )
+        payload = build_status(db_path=resolved_db, socket_path=resolved_socket)
+        payload["api_token"] = web_token
+        return JSONResponse(payload)
 
     async def capabilities(_request: Any) -> JSONResponse:
         return JSONResponse(build_capabilities())
@@ -212,6 +216,15 @@ def create_app(
             transcript=transcript_str,
         )
 
+    def guarded(endpoint: Any) -> Any:
+        async def guarded_endpoint(request: Any) -> Any:
+            blocked = _mutation_guard(request, web_token)
+            if blocked is not None:
+                return blocked
+            return await endpoint(request)
+
+        return guarded_endpoint
+
     async def missing_frontend(_request: Any) -> HTMLResponse:
         return HTMLResponse(
             "<!doctype html><title>tm web</title>"
@@ -226,19 +239,19 @@ def create_app(
         Route("/api/status", status, methods=["GET"]),
         Route("/api/capabilities", capabilities, methods=["GET"]),
         Route("/api/agents", agents, methods=["GET"]),
-        Route("/api/agents/select", select_agent, methods=["POST"]),
+        Route("/api/agents/select", guarded(select_agent), methods=["POST"]),
         Route("/api/now", now, methods=["GET"]),
         Route("/api/dashboard", dashboard, methods=["GET"]),
-        Route("/api/debrief", run_debrief, methods=["POST"]),
-        Route("/api/suggest", suggest, methods=["POST"]),
-        Route("/api/capture/telegram", capture_telegram_api, methods=["POST"]),
-        Route("/api/capture/calendar", capture_calendar_api, methods=["POST"]),
-        Route("/api/capture/voice", capture_voice_api, methods=["POST"]),
+        Route("/api/debrief", guarded(run_debrief), methods=["POST"]),
+        Route("/api/suggest", guarded(suggest), methods=["POST"]),
+        Route("/api/capture/telegram", guarded(capture_telegram_api), methods=["POST"]),
+        Route("/api/capture/calendar", guarded(capture_calendar_api), methods=["POST"]),
+        Route("/api/capture/voice", guarded(capture_voice_api), methods=["POST"]),
         Route("/api/export", export_api, methods=["GET"]),
-        Route("/api/backup", backup_api, methods=["POST"]),
-        Route("/api/privacy/redact", privacy_redact_api, methods=["POST"]),
-        Route("/api/privacy/forget", privacy_forget_api, methods=["POST"]),
-        Route("/api/reextract", reextract_api, methods=["POST"]),
+        Route("/api/backup", guarded(backup_api), methods=["POST"]),
+        Route("/api/privacy/redact", guarded(privacy_redact_api), methods=["POST"]),
+        Route("/api/privacy/forget", guarded(privacy_forget_api), methods=["POST"]),
+        Route("/api/reextract", guarded(reextract_api), methods=["POST"]),
     ]
     if resolved_static.exists():
         routes.append(Mount("/", StaticFiles(directory=resolved_static, html=True)))
@@ -246,6 +259,27 @@ def create_app(
         routes.append(Route("/", missing_frontend, methods=["GET"]))
 
     return Starlette(debug=False, routes=routes)
+
+
+def _mutation_guard(request: Any, web_token: str) -> Any | None:
+    from starlette.responses import JSONResponse
+
+    sec_fetch_site = str(request.headers.get("sec-fetch-site", "")).lower()
+    if sec_fetch_site == "cross-site":
+        return JSONResponse(
+            {"ok": False, "error": "cross-site request blocked"},
+            status_code=403,
+        )
+
+    supplied_token = request.headers.get(_WEB_TOKEN_HEADER)
+    if not isinstance(supplied_token, str) or not secrets.compare_digest(
+        supplied_token, web_token
+    ):
+        return JSONResponse(
+            {"ok": False, "error": "invalid web token"},
+            status_code=403,
+        )
+    return None
 
 
 def _daemon_call(

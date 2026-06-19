@@ -8,12 +8,11 @@ from typing import Annotated, Any
 
 import typer
 
+from tm._paths import default_db_path
 from tm.agents.debrief import DuplicateSummaryError
 from tm.commands._shared import (
     DbPathOption,
-    cli_error,
-    prepare_db,
-    read_required_text_file,
+    ensure_migrations,
     require_api_key,
     validate_case_date,
 )
@@ -147,19 +146,25 @@ def _fetch_cost_rows_after(db_path: Path, cost_id: int) -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
-def _append_cost_rows(db_path: Path, rows: list[dict[str, Any]]) -> None:
+def _insert_cost_rows(conn: Any, rows: list[dict[str, Any]]) -> None:
     if not rows:
         return
     column_sql = ", ".join(_COST_COLUMNS)
     placeholder_sql = ", ".join("?" for _ in _COST_COLUMNS)
+    conn.executemany(
+        f"INSERT INTO cost_ledger ({column_sql}) VALUES ({placeholder_sql})",
+        ([row[column] for column in _COST_COLUMNS] for row in rows),
+    )
+
+
+def _append_cost_rows(db_path: Path, rows: list[dict[str, Any]]) -> None:
+    if not rows:
+        return
     conn = connect_sqlite(db_path)
     try:
         enable_wal_mode(conn, db_path)
         with conn:
-            conn.executemany(
-                f"INSERT INTO cost_ledger ({column_sql}) VALUES ({placeholder_sql})",
-                ([row[column] for column in _COST_COLUMNS] for row in rows),
-            )
+            _insert_cost_rows(conn, rows)
     finally:
         harden_sqlite_file_permissions(db_path)
         conn.close()
@@ -176,8 +181,6 @@ def _replace_debrief_events(
 ) -> int:
     event_column_sql = ", ".join(_EVENT_COLUMNS)
     event_placeholder_sql = ", ".join("?" for _ in _EVENT_COLUMNS)
-    cost_column_sql = ", ".join(_COST_COLUMNS)
-    cost_placeholder_sql = ", ".join("?" for _ in _COST_COLUMNS)
     conn = connect_sqlite(db_path, isolation_level=None, row_factory=True)
     try:
         enable_wal_mode(conn, db_path)
@@ -199,11 +202,7 @@ def _replace_debrief_events(
             f"INSERT INTO events ({event_column_sql}) VALUES ({event_placeholder_sql})",
             ([event[column] for column in _EVENT_COLUMNS] for event in events),
         )
-        conn.executemany(
-            f"INSERT INTO cost_ledger ({cost_column_sql}) "
-            f"VALUES ({cost_placeholder_sql})",
-            ([row[column] for column in _COST_COLUMNS] for row in cost_rows),
-        )
+        _insert_cost_rows(conn, cost_rows)
         if replacement_transcript is not None:
             conn.execute(
                 "INSERT INTO transcripts "
@@ -256,30 +255,37 @@ def reextract(
 ) -> None:
     """Replay a transcript in a staging DB, then replace prior debrief events."""
     if not case_date:
-        cli_error("--case-date is required", code=2)
+        typer.echo("error: --case-date is required", err=True)
+        raise typer.Exit(2)
     resolved_case_date = validate_case_date(case_date)
     require_api_key("tm reextract")
-    resolved_db = prepare_db(db_path)
+    resolved_db = db_path or default_db_path()
+    ensure_migrations(resolved_db)
     privacy_fence = _privacy_action_count(resolved_db)
 
     transcripts = TranscriptRepository(resolved_db)
     replacement_transcript: str | None = None
     if transcript_file is not None:
-        replacement_transcript = read_required_text_file(
-            transcript_file,
-            read_description="transcript file",
-            empty_description="transcript",
-        )
+        try:
+            replacement_transcript = transcript_file.read_text(encoding="utf-8")
+        except OSError as exc:
+            typer.echo(f"error: could not read transcript file: {exc}", err=True)
+            raise typer.Exit(1) from exc
+        if not replacement_transcript.strip():
+            typer.echo("error: transcript is empty", err=True)
+            raise typer.Exit(1)
     record = transcripts.get(resolved_case_date)
     if replacement_transcript is None and record is None:
-        cli_error(f"no retained transcript for case_date={resolved_case_date}")
-    transcript_text = (
-        replacement_transcript
-        if replacement_transcript is not None
-        else record.transcript_text
-        if record is not None
-        else ""
-    )
+        typer.echo(
+            f"error: no retained transcript for case_date={resolved_case_date}",
+            err=True,
+        )
+        raise typer.Exit(1)
+    if replacement_transcript is not None:
+        transcript_text = replacement_transcript
+    else:
+        assert record is not None
+        transcript_text = record.transcript_text
 
     with tempfile.TemporaryDirectory(prefix="tm-reextract-") as tmpdir:
         staging_db = Path(tmpdir) / "staging.db"
@@ -303,7 +309,8 @@ def reextract(
                 _append_cost_rows(
                     resolved_db, _fetch_cost_rows_after(staging_db, cost_floor)
                 )
-                cli_error(f"duplicate summary after cleanup: {exc}", cause=exc)
+                typer.echo(f"error: duplicate summary after cleanup: {exc}", err=True)
+                raise typer.Exit(1) from exc
             except Exception:
                 _append_cost_rows(
                     resolved_db, _fetch_cost_rows_after(staging_db, cost_floor)
@@ -323,7 +330,8 @@ def reextract(
                 )
             except PrivacyFenceChangedError as exc:
                 _append_cost_rows(resolved_db, cost_rows)
-                cli_error(str(exc), cause=exc)
+                typer.echo(f"error: {exc}", err=True)
+                raise typer.Exit(1) from exc
             except Exception:
                 _append_cost_rows(resolved_db, cost_rows)
                 raise

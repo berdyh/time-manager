@@ -135,10 +135,11 @@ class CostMeter:
         monthly_cap_usd: float | None = None,
     ) -> None:
         self._db_path = str(db_path)
-        if monthly_cap_usd is not None:
-            self._cap = float(monthly_cap_usd)
-        else:
-            self._cap = self._cap_from_env()
+        self._cap = (
+            float(monthly_cap_usd)
+            if monthly_cap_usd is not None
+            else self._cap_from_env()
+        )
         # In-memory soft-alarm flag: trips once per process run when monthly
         # total crosses _SOFT_ALARM_FRACTION of the cap.
         self._soft_alarm_fired = False
@@ -179,13 +180,11 @@ class CostMeter:
         floor = _month_floor_iso()
         conn = self._connect()
         try:
-            cur = conn.execute(
+            row = conn.execute(
                 "SELECT COALESCE(SUM(est_cost_usd), 0.0) FROM cost_ledger "
                 "WHERE ts >= ?",
                 (floor,),
-            )
-            row = cur.fetchone()
-            cur.close()
+            ).fetchone()
             return float(row[0]) if row is not None else 0.0
         finally:
             conn.close()

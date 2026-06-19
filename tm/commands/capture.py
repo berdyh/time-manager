@@ -11,12 +11,10 @@ from typing import Annotated, Any
 
 import typer
 
+from tm._paths import default_db_path
 from tm.commands._shared import (
     DbPathOption,
-    cli_error,
-    prepare_db,
-    read_required_text_file,
-    read_text_file,
+    ensure_migrations,
     utc_today,
     validate_case_date,
 )
@@ -55,8 +53,6 @@ def _normalize_timestamp(raw: str) -> str:
         value = value[:-1] + "+00:00"
     elif "T" in value and "-" not in value[:10]:
         raise ValueError("timezone required for compact datetime")
-    if value.endswith("Z"):
-        value = value[:-1] + "+00:00"
     dt = datetime.fromisoformat(value)
     if dt.tzinfo is None:
         raise ValueError("timezone required for datetime")
@@ -157,16 +153,19 @@ def capture_telegram(
     db_path: DbPathOption = None,
 ) -> None:
     """Import Telegram Desktop JSON export messages as capture events."""
-    resolved_db = prepare_db(db_path)
+    resolved_db = db_path or default_db_path()
+    ensure_migrations(resolved_db)
 
     try:
-        raw = json.loads(read_text_file(input_path, "Telegram export"))
-    except json.JSONDecodeError as exc:
-        cli_error(f"could not read Telegram export: {exc}", cause=exc)
+        raw = json.loads(input_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        typer.echo(f"error: could not read Telegram export: {exc}", err=True)
+        raise typer.Exit(1) from exc
 
     messages = raw.get("messages") if isinstance(raw, dict) else raw
     if not isinstance(messages, list):
-        cli_error("expected Telegram export with a messages array")
+        typer.echo("error: expected Telegram export with a messages array", err=True)
+        raise typer.Exit(1)
     chat_identity, has_chat_identity = _telegram_chat_identity(raw)
 
     repo = EventsRepository(resolved_db)
@@ -239,12 +238,17 @@ def capture_calendar(
     db_path: DbPathOption = None,
 ) -> None:
     """Import VEVENT rows from an iCalendar file."""
-    resolved_db = prepare_db(db_path)
-    lines = _unfold_ics(read_text_file(input_path, "calendar file"))
+    resolved_db = db_path or default_db_path()
+    ensure_migrations(resolved_db)
+    try:
+        lines = _unfold_ics(input_path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        typer.echo(f"error: could not read calendar file: {exc}", err=True)
+        raise typer.Exit(1) from exc
 
     current: dict[str, str] | None = None
     pending: list[tuple[str, str, str | None, dict[str, Any]]] = []
-    unsupported_tzid = 0
+    unsupported_calendar_features = 0
     unsupported_timestamp = 0
     for line in lines:
         if line == "BEGIN:VEVENT":
@@ -253,12 +257,10 @@ def capture_calendar(
         if line == "END:VEVENT" and current is not None:
             summary = current.get("SUMMARY", "calendar_event").strip()
             start = current.get("DTSTART")
-            if current.get("_UNSUPPORTED_TZID"):
-                unsupported_tzid += 1
-                current = None
-                continue
-            if current.get("_UNSUPPORTED_RECURRENCE"):
-                unsupported_tzid += 1
+            if current.get("_UNSUPPORTED_TZID") or current.get(
+                "_UNSUPPORTED_RECURRENCE"
+            ):
+                unsupported_calendar_features += 1
                 current = None
                 continue
             if start:
@@ -281,16 +283,20 @@ def capture_calendar(
             if key in {"RRULE", "RDATE", "EXDATE"}:
                 current["_UNSUPPORTED_RECURRENCE"] = key
             current[key] = value
-    if unsupported_tzid:
-        cli_error(
-            "calendar import does not support TZID or recurrence; "
-            "export UTC single-instance .ics instead"
+    if unsupported_calendar_features:
+        typer.echo(
+            "error: calendar import does not support TZID or recurrence; "
+            "export UTC single-instance .ics instead",
+            err=True,
         )
+        raise typer.Exit(1)
     if unsupported_timestamp:
-        cli_error(
-            "calendar import requires UTC or offset timestamps; "
-            "export UTC single-instance .ics instead"
+        typer.echo(
+            "error: calendar import requires UTC or offset timestamps; "
+            "export UTC single-instance .ics instead",
+            err=True,
         )
+        raise typer.Exit(1)
 
     repo = EventsRepository(resolved_db)
     imported = 0
@@ -322,13 +328,17 @@ def capture_voice(
     ] = None,
 ) -> None:
     """Capture an already-transcribed voice note for later re-extraction."""
+    resolved_db = db_path or default_db_path()
     resolved_case_date = validate_case_date(case_date or utc_today())
-    resolved_db = prepare_db(db_path)
-    transcript = read_required_text_file(
-        transcript_file,
-        read_description="transcript file",
-        empty_description="transcript",
-    )
+    ensure_migrations(resolved_db)
+    try:
+        transcript = transcript_file.read_text(encoding="utf-8")
+    except OSError as exc:
+        typer.echo(f"error: could not read transcript file: {exc}", err=True)
+        raise typer.Exit(1) from exc
+    if not transcript.strip():
+        typer.echo("error: transcript is empty", err=True)
+        raise typer.Exit(1)
 
     TranscriptRepository(resolved_db).upsert(
         case_date=resolved_case_date,

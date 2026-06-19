@@ -60,7 +60,6 @@ connection continues until idle-timeout or EOF.
 
 Out of scope (deliberately deferred)
 ------------------------------------
-- No CLI command (``tm daemon start/stop``) — separate follow-up.
 - No Telegram bot integration.
 - No bot whitelist / auth — the ``0600`` socket is the auth boundary.
 - No SQLCipher / keyring beyond the stub in :mod:`tm.resilience`.
@@ -455,8 +454,8 @@ class TMDaemon:
     def run(self) -> None:
         """Listen on the Unix socket until :meth:`shutdown` is called.
 
-        Blocking.  Intended to be called either from the main thread of a
-        ``tm daemon start`` CLI (future) or from a worker thread in tests.
+        Blocking.  Intended to be called from the ``tm daemon start`` CLI
+        or from a worker thread in tests.
         """
         sock = self._bind_socket()
         self._listening_sock = sock

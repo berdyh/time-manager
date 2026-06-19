@@ -58,6 +58,33 @@ def test_dashboard_and_now_use_existing_repositories(tmp_path: Path) -> None:
     assert now["outcome"]["outcome_score"] == 2
 
 
+def test_now_recent_events_uses_newest_rows(tmp_path: Path) -> None:
+    db = tmp_path / "tm.db"
+    _prepare_db(db)
+    events = EventsRepository(db)
+    for idx in range(10):
+        events.append_event(
+            event_id=f"evt-{idx:02d}",
+            case_id="case-1",
+            activity=f"activity_{idx:02d}",
+            timestamp=f"2026-06-18T{idx:02d}:00:00Z",
+            lifecycle="complete",
+        )
+
+    now = build_now(db_path=db)
+
+    assert [event["event_id"] for event in now["recent_events"]] == [
+        "evt-09",
+        "evt-08",
+        "evt-07",
+        "evt-06",
+        "evt-05",
+        "evt-04",
+        "evt-03",
+        "evt-02",
+    ]
+
+
 def test_selected_agent_params_uses_web_config(tmp_path: Path) -> None:
     config = tmp_path / "web-config.json"
     save_selected_agent("kimchi", model="kimchi-dev/minimax-m3", config_path=config)

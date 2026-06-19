@@ -24,6 +24,7 @@ import "./styles.css";
 type StatusPayload = {
   db_path: string;
   socket_path: string;
+  api_token: string;
   daemon: { alive: boolean; detail: string };
   cost: { monthly_total_usd: number | null; monthly_cap_usd: number | null };
   selected_agent: string;
@@ -119,6 +120,7 @@ const API = {
   now: "/api/now",
   capabilities: "/api/capabilities",
   selectAgent: "/api/agents/select",
+  debrief: "/api/debrief",
   export: "/api/export",
   backup: "/api/backup",
   captureTelegram: "/api/capture/telegram",
@@ -153,10 +155,18 @@ async function getJson<T>(path: string): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-async function postJson<T>(path: string, payload: unknown): Promise<T> {
+async function postJson<T>(
+  path: string,
+  payload: unknown,
+  apiToken: string | null | undefined
+): Promise<T> {
+  const headers: Record<string, string> = { "content-type": "application/json" };
+  if (apiToken) {
+    headers["x-tm-web-token"] = apiToken;
+  }
   const response = await fetch(path, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers,
     body: JSON.stringify(payload)
   });
   const data = (await response.json()) as T;
@@ -208,13 +218,10 @@ function App() {
 
   const selectedAgent =
     state.agents.find((agent) => agent.selected) ?? state.agents[0] ?? null;
+  const apiToken = state.status?.api_token;
 
   async function selectAgent(agentId: string) {
-    await fetch(API.selectAgent, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ agent_id: agentId })
-    });
+    await postJson(API.selectAgent, { agent_id: agentId }, apiToken);
     await refresh();
   }
 
@@ -231,7 +238,7 @@ function App() {
 
   function postAction(label: string, path: string, payload: unknown) {
     return runAction(label, async () => {
-      await postJson(path, payload);
+      await postJson(path, payload, apiToken);
     });
   }
 
@@ -313,7 +320,7 @@ function App() {
             onBackup={(outputPath) =>
               postAction("Backup written", API.backup, {
                 output_path: outputPath,
-                overwrite: true
+                overwrite: false
               })
             }
           />
@@ -341,6 +348,12 @@ function App() {
           />
           <DebriefPanel
             now={state.now}
+            onDebrief={(caseDate, transcript) =>
+              postAction("Debrief complete", API.debrief, {
+                case_date: caseDate,
+                transcript
+              })
+            }
             onReextract={(caseDate, transcript) =>
               postAction("Reextract requested", API.reextract, {
                 case_date: caseDate,
@@ -687,9 +700,11 @@ function FileButton({
 
 function DebriefPanel({
   now,
+  onDebrief,
   onReextract
 }: {
   now: NowPayload | null;
+  onDebrief: (caseDate: string, transcript: string) => void;
   onReextract: (caseDate: string, transcript: string) => void;
 }) {
   const [replacementTranscript, setReplacementTranscript] = React.useState("");
@@ -708,7 +723,11 @@ function DebriefPanel({
         onChange={(event) => setReplacementTranscript(event.target.value)}
       />
       <div className="action-row compact">
-        <button className="secondary-action" title="Run debrief">
+        <button
+          className="secondary-action"
+          title="Run debrief"
+          onClick={() => onDebrief(caseDate, replacementTranscript)}
+        >
           <Play size={16} />
           <span>Run</span>
         </button>

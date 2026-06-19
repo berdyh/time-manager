@@ -4,19 +4,15 @@ from __future__ import annotations
 
 import json
 import shutil
+from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Any
 
 import typer
 
-from tm._paths import default_kuzu_path, kuzu_projection_marker_path
-from tm.commands._shared import (
-    DbPathOption,
-    cli_error,
-    prepare_db,
-    validate_case_date,
-)
+from tm._paths import default_db_path, default_kuzu_path, kuzu_projection_marker_path
+from tm.commands._shared import DbPathOption, ensure_migrations, validate_case_date
 from tm.models.goals import ulid
 from tm.security import connect_sqlite
 
@@ -37,7 +33,8 @@ def _selector(
     case_date: str | None, event_id: str | None
 ) -> tuple[str, str, tuple[str, ...]]:
     if bool(case_date) == bool(event_id):
-        cli_error("provide exactly one of --case-date or --event-id", code=2)
+        typer.echo("error: provide exactly one of --case-date or --event-id", err=True)
+        raise typer.Exit(2)
     if case_date:
         valid_case_date = validate_case_date(case_date)
         next_case_date = (
@@ -78,6 +75,12 @@ def _redact_value(value: Any, replacement: str) -> Any:
     return value
 
 
+def _redacted_activity(activity: str, replacement: str) -> str:
+    if activity == "debrief_summary":
+        return "debrief_summary"
+    return replacement
+
+
 def _case_date_from_timestamp(timestamp: Any) -> str | None:
     raw = str(timestamp or "").strip()
     for separator in ("T", " "):
@@ -99,34 +102,8 @@ def _case_date_for_event(row: Any) -> str | None:
     return _case_date_from_timestamp(row["timestamp"])
 
 
-def _log_action(
-    conn: Any,
-    *,
-    action_type: str,
-    selector: str,
-    affected_events: int,
-    affected_transcripts: int,
-) -> None:
-    conn.execute(
-        "INSERT INTO privacy_actions "
-        "(action_id, action_type, selector, affected_events, affected_transcripts) "
-        "VALUES (?, ?, ?, ?, ?)",
-        (ulid(), action_type, selector, affected_events, affected_transcripts),
-    )
-
-
-def _case_dates_for_related_data(
-    case_date: str | None,
-    event_case_dates: set[str],
-) -> list[str]:
-    return [case_date] if case_date else sorted(event_case_dates)
-
-
-def _redact_related_case_data(
-    conn: Any,
-    *,
-    case_dates: list[str],
-    replacement: str,
+def _redact_case_artifacts(
+    conn: Any, case_dates: Iterable[str], replacement: str
 ) -> int:
     transcript_count = 0
     for case_date in case_dates:
@@ -144,26 +121,28 @@ def _redact_related_case_data(
     return transcript_count
 
 
-def _delete_related_case_data(conn: Any, case_date: str) -> int:
+def _delete_case_artifacts(conn: Any, case_date: str | None) -> int:
+    if not case_date:
+        return 0
     cur = conn.execute("DELETE FROM transcripts WHERE case_date=?", (case_date,))
     conn.execute("DELETE FROM suggestion_telemetry WHERE case_date=?", (case_date,))
     return int(cur.rowcount)
 
 
-def _echo_privacy_result(
-    verb: str,
+def _log_action(
+    conn: Any,
     *,
-    event_count: int,
-    transcript_count: int,
-    show_transcript_count: bool,
-    kuzu_cleared: bool,
+    action_type: str,
+    selector: str,
+    affected_events: int,
+    affected_transcripts: int,
 ) -> None:
-    typer.echo(
-        f"{verb} {event_count} events"
-        + (f" and {transcript_count} transcripts" if show_transcript_count else "")
+    conn.execute(
+        "INSERT INTO privacy_actions "
+        "(action_id, action_type, selector, affected_events, affected_transcripts) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (ulid(), action_type, selector, affected_events, affected_transcripts),
     )
-    if kuzu_cleared:
-        typer.echo("cleared Kuzu projection")
 
 
 def _projection_path(kuzu_db_path: Path | None) -> Path:
@@ -211,11 +190,19 @@ def _ensure_kuzu_projection_clearable(kuzu_db_path: Path | None) -> None:
     if not projection.exists() and not projection.is_symlink():
         return
     if projection.is_symlink():
-        cli_error(f"refusing to clear symlinked Kuzu projection path: {projection}")
+        typer.echo(
+            f"error: refusing to clear symlinked Kuzu projection path: {projection}",
+            err=True,
+        )
+        raise typer.Exit(1)
     if not _is_default_projection(projection) and not _has_projection_marker(
         projection
     ):
-        cli_error(f"refusing to clear unmarked Kuzu projection path: {projection}")
+        typer.echo(
+            f"error: refusing to clear unmarked Kuzu projection path: {projection}",
+            err=True,
+        )
+        raise typer.Exit(1)
 
 
 def _harden_sqlite_deletes(conn: Any) -> None:
@@ -254,7 +241,8 @@ def redact(
     ] = "[redacted]",
 ) -> None:
     """Redact string attributes and resources while preserving event shape."""
-    resolved_db = prepare_db(db_path)
+    resolved_db = db_path or default_db_path()
+    ensure_migrations(resolved_db)
     _ensure_kuzu_projection_clearable(kuzu_db_path)
     selector_name, where_sql, params = _selector(case_date, event_id)
     conn = connect_sqlite(resolved_db, isolation_level=None, row_factory=True)
@@ -276,20 +264,15 @@ def redact(
                 "UPDATE events SET activity=?, resource=NULL, attributes_json=? "
                 "WHERE event_id=?",
                 (
-                    (
-                        "debrief_summary"
-                        if row["activity"] == "debrief_summary"
-                        else replacement
-                    ),
+                    _redacted_activity(row["activity"], replacement),
                     _redact_attributes(row["attributes_json"], replacement),
                     row["event_id"],
                 ),
             )
-        transcript_count = _redact_related_case_data(
-            conn,
-            case_dates=_case_dates_for_related_data(case_date, transcript_case_dates),
-            replacement=replacement,
+        target_case_dates = (
+            [case_date] if case_date is not None else sorted(transcript_case_dates)
         )
+        transcript_count = _redact_case_artifacts(conn, target_case_dates, replacement)
         _log_action(
             conn,
             action_type="redact",
@@ -305,13 +288,13 @@ def redact(
         raise
     finally:
         conn.close()
-    _echo_privacy_result(
-        "redacted",
-        event_count=len(rows),
-        transcript_count=transcript_count,
-        show_transcript_count=bool(case_date) or bool(transcript_case_dates),
-        kuzu_cleared=kuzu_cleared,
+    show_transcript_count = bool(case_date) or bool(transcript_case_dates)
+    typer.echo(
+        f"redacted {len(rows)} events"
+        + (f" and {transcript_count} transcripts" if show_transcript_count else "")
     )
+    if kuzu_cleared:
+        typer.echo("cleared Kuzu projection")
 
 
 @privacy_app.command("forget")
@@ -328,7 +311,8 @@ def forget(
     ] = None,
 ) -> None:
     """Delete selected events and associated transcript/suggestion data."""
-    resolved_db = prepare_db(db_path)
+    resolved_db = db_path or default_db_path()
+    ensure_migrations(resolved_db)
     _ensure_kuzu_projection_clearable(kuzu_db_path)
     selector_name, where_sql, params = _selector(case_date, event_id)
     conn = connect_sqlite(resolved_db, isolation_level=None, row_factory=True)
@@ -336,21 +320,18 @@ def forget(
     try:
         _harden_sqlite_deletes(conn)
         conn.execute("BEGIN IMMEDIATE")
-        transcript_case_date: str | None = None
+        target_case_date = case_date
         if event_id:
             event_row = conn.execute(
                 "SELECT case_date, timestamp FROM events WHERE event_id=?", (event_id,)
             ).fetchone()
-            transcript_case_date = _case_date_for_event(event_row)
+            target_case_date = _case_date_for_event(event_row)
         row = conn.execute(
             f"SELECT COUNT(*) FROM events WHERE {where_sql}", params
         ).fetchone()
         affected_events = int(row[0]) if row else 0
         conn.execute(f"DELETE FROM events WHERE {where_sql}", params)
-        transcript_count = 0
-        related_case_date = case_date or transcript_case_date
-        if related_case_date:
-            transcript_count = _delete_related_case_data(conn, related_case_date)
+        transcript_count = _delete_case_artifacts(conn, target_case_date)
         _log_action(
             conn,
             action_type="forget",
@@ -366,10 +347,10 @@ def forget(
         raise
     finally:
         conn.close()
-    _echo_privacy_result(
-        "forgot",
-        event_count=affected_events,
-        transcript_count=transcript_count,
-        show_transcript_count=bool(case_date) or bool(transcript_case_date),
-        kuzu_cleared=kuzu_cleared,
+    show_transcript_count = bool(target_case_date)
+    typer.echo(
+        f"forgot {affected_events} events"
+        + (f" and {transcript_count} transcripts" if show_transcript_count else "")
     )
+    if kuzu_cleared:
+        typer.echo("cleared Kuzu projection")

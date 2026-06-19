@@ -35,7 +35,6 @@ ENV_SQLCIPHER_KEY = "TM_SQLCIPHER_KEY"
 ENV_SQLCIPHER_KEYRING = "TM_SQLCIPHER_KEYRING"
 _KEYRING_SERVICE = "tm"
 _PROCESS_KEY_OVERRIDES: dict[str, str] = {}
-_MEMORY_SQLITE_PATH = ":memory:"
 _PRIVATE_SQLITE_FILE_MODE = 0o600
 _PRIVATE_SQLITE_UMASK_LOCK = threading.Lock()
 
@@ -52,19 +51,15 @@ class EncryptionStatus:
 
 
 def _db_key_name(db_path: str | Path) -> str:
-    if _is_memory_db(db_path):
-        return _MEMORY_SQLITE_PATH
+    if str(db_path) == ":memory:":
+        return ":memory:"
     return str(Path(db_path).expanduser().resolve(strict=False))
 
 
 def _normalize_sqlite_path(db_path: str | Path) -> str | Path:
-    if _is_memory_db(db_path):
-        return _MEMORY_SQLITE_PATH
+    if str(db_path) == ":memory:":
+        return ":memory:"
     return Path(db_path).expanduser().resolve(strict=False)
-
-
-def _is_memory_db(db_path: str | Path) -> bool:
-    return str(db_path) == _MEMORY_SQLITE_PATH
 
 
 def _import_keyring() -> Any | None:
@@ -86,7 +81,7 @@ def _sql_literal(value: str) -> str:
 
 def _sqlite_paths(db_path: str | Path) -> tuple[Path, ...]:
     normalized = _normalize_sqlite_path(db_path)
-    if _is_memory_db(normalized):
+    if normalized == ":memory:":
         return ()
     path = Path(normalized)
     return (
@@ -99,7 +94,7 @@ def _sqlite_paths(db_path: str | Path) -> tuple[Path, ...]:
 
 def _ensure_private_sqlite_file(db_path: str | Path) -> None:
     normalized = _normalize_sqlite_path(db_path)
-    if _is_memory_db(normalized):
+    if normalized == ":memory:":
         return
     path = Path(normalized)
     try:
@@ -122,7 +117,7 @@ def _private_sqlite_umask() -> Iterator[None]:
 
 def harden_sqlite_file_permissions(db_path: str | Path) -> None:
     """Make the SQLite database and any existing sidecars owner-only."""
-    if _is_memory_db(db_path):
+    if str(db_path) == ":memory:":
         return
     for path in _sqlite_paths(db_path):
         try:
@@ -195,17 +190,6 @@ def _apply_key(conn: sqlite3.Connection, key: str) -> None:
     conn.execute("SELECT count(*) FROM sqlite_master").fetchone()
 
 
-def _sqlcipher_available() -> bool:
-    conn: sqlite3.Connection | None = None
-    try:
-        conn = sqlite3.connect(_MEMORY_SQLITE_PATH)
-        row = conn.execute("PRAGMA cipher_version").fetchone()
-        return bool(row and row[0])
-    finally:
-        if conn is not None:
-            conn.close()
-
-
 def connect_sqlite(
     db_path: str | Path,
     *,
@@ -248,8 +232,17 @@ def connect_sqlite(
 def encryption_status(db_path: str | Path) -> EncryptionStatus:
     keyring = _import_keyring()
     key, source = key_source_for_path(db_path)
+    available = False
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = sqlite3.connect(":memory:")
+        row = conn.execute("PRAGMA cipher_version").fetchone()
+        available = bool(row and row[0])
+    finally:
+        if conn is not None:
+            conn.close()
     return EncryptionStatus(
-        sqlcipher_available=_sqlcipher_available(),
+        sqlcipher_available=available,
         key_source=source if key else None,
         keyring_available=keyring is not None,
     )

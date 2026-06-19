@@ -191,7 +191,6 @@ def review(
     aliases_added = 0
     canonicals_created = 0
     skipped = 0
-    remaining = len(novel_labels)
 
     for label, count in novel_labels:
         typer.echo(f"\n{label} (n={count})")
