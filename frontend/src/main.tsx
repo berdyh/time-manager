@@ -409,14 +409,14 @@ function DirectivePanel({
         <span>{selectedAgent?.label ?? "No agent"}</span>
       </div>
       <div className="action-row">
-        <button className="primary-action" title="Start directive">
+        <a className="primary-action" href="#debrief" title="Open debrief">
           <Play size={17} />
-          <span>Start</span>
-        </button>
-        <button className="secondary-action" title="Mark done">
+          <span>Debrief</span>
+        </a>
+        <a className="secondary-action" href="#plan" title="Open plan">
           <Target size={17} />
-          <span>Done</span>
-        </button>
+          <span>Plan</span>
+        </a>
       </div>
       <div className="evidence">
         <div>

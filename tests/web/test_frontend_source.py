@@ -20,3 +20,14 @@ def test_private_frontend_reads_send_status_token() -> None:
     assert "const apiToken = status.api_token;" in source
     assert "getJson<{ agents: Agent[] }>(API.agents, apiToken)" in source
     assert "getJson<ExportPayload>(API.export, apiToken)" in source
+
+
+def test_directive_panel_actions_are_not_inert_buttons() -> None:
+    source = Path("frontend/src/main.tsx").read_text(encoding="utf-8")
+
+    assert (
+        '<a className="primary-action" href="#debrief" title="Open debrief">' in source
+    )
+    assert '<a className="secondary-action" href="#plan" title="Open plan">' in source
+    assert 'title="Start directive"' not in source
+    assert 'title="Mark done"' not in source
