@@ -1,0 +1,328 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>UI Session Update</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f7f8fb;
+      --panel: #ffffff;
+      --ink: #18202f;
+      --muted: #667085;
+      --line: #a8b3c7;
+      --ready: #1f7a4d;
+      --pending: #9a5b13;
+      --border: #d4dbe8;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font: 15px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    main {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 32px 20px 48px;
+    }
+
+    h1 {
+      margin: 0 0 8px;
+      font-size: 30px;
+      line-height: 1.1;
+      letter-spacing: 0;
+    }
+
+    .summary {
+      margin: 0 0 24px;
+      color: var(--muted);
+      max-width: 780px;
+    }
+
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px 18px;
+      margin: 0 0 24px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .legend span {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--pending);
+    }
+
+    .dot.ready { background: var(--ready); }
+
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 22px;
+      position: relative;
+    }
+
+    .stage {
+      display: grid;
+      gap: 16px;
+      align-content: start;
+    }
+
+    .stage-title {
+      color: var(--muted);
+      font-weight: 700;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .node {
+      position: relative;
+      min-height: 170px;
+      padding: 16px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      box-shadow: 0 8px 24px rgba(31, 41, 55, 0.06);
+    }
+
+    .node::after {
+      content: "";
+      position: absolute;
+      top: 50%;
+      right: -23px;
+      width: 23px;
+      border-top: 2px solid var(--line);
+    }
+
+    .stage:last-child .node::after,
+    .node.terminal::after {
+      display: none;
+    }
+
+    .node label {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      margin: 0 0 8px;
+      font-weight: 800;
+    }
+
+    .node input {
+      width: 18px;
+      height: 18px;
+      margin: 1px 0 0;
+      accent-color: var(--ready);
+      flex: 0 0 auto;
+    }
+
+    .node p {
+      margin: 0 0 10px 28px;
+      color: var(--muted);
+    }
+
+    .files {
+      margin: 0 0 0 28px;
+      padding: 0;
+      list-style: none;
+      color: #344054;
+      font-size: 13px;
+    }
+
+    .files li + li { margin-top: 3px; }
+
+    code {
+      background: #eef2f7;
+      border: 1px solid #dde5f1;
+      border-radius: 4px;
+      padding: 0 4px;
+      white-space: nowrap;
+    }
+
+    .status {
+      display: inline-flex;
+      margin: 12px 0 0 28px;
+      padding: 3px 8px;
+      border-radius: 999px;
+      background: #fff7ed;
+      color: var(--pending);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .status.ready {
+      background: #ecfdf3;
+      color: var(--ready);
+    }
+
+    @media (max-width: 960px) {
+      .flow { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .stage:nth-child(2n) .node::after { display: none; }
+    }
+
+    @media (max-width: 620px) {
+      main { padding: 24px 14px 36px; }
+      .flow { grid-template-columns: 1fr; }
+      .node::after { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Session Implementation Flow</h1>
+    <p class="summary">
+      Branch <code>feature/capture-dashboard-export-privacy-daemon-eval</code>
+      split into code sections for the requested <code>@code-simplifier</code>
+      pass. A box is checked only after the section has been reviewed for
+      unnecessary complexity and any small simplifications have been handled.
+      Current status: all sections checked after subagent simplifier review.
+    </p>
+
+    <div class="legend" aria-label="Status legend">
+      <span><i class="dot" aria-hidden="true"></i> pending simplifier pass</span>
+      <span><i class="dot ready" aria-hidden="true"></i> simplified enough</span>
+    </div>
+
+    <section class="flow" aria-label="Code section simplification graph">
+      <div class="stage">
+        <div class="stage-title">Data Base</div>
+        <article class="node" id="sqlite-security">
+          <label><input type="checkbox" checked disabled>Private SQLite security</label>
+          <p>Owner-only SQLite creation, SQLCipher/keyring hooks, WAL hardening, and path normalization.</p>
+          <ul class="files">
+            <li><code>tm/security.py</code></li>
+            <li><code>tm/_paths.py</code>, stores, repositories</li>
+            <li><code>tests/test_security.py</code></li>
+          </ul>
+          <span class="status ready">simplified enough</span>
+        </article>
+
+        <article class="node" id="transcripts">
+          <label><input type="checkbox" checked disabled>Transcript retention</label>
+          <p>Raw transcript retention for replay, capture, and daemon-created debriefs.</p>
+          <ul class="files">
+            <li><code>migrations/0011_capture_transcripts_privacy.sql</code></li>
+            <li><code>tm/repositories/transcripts.py</code></li>
+            <li><code>tm/commands/debrief.py</code>, <code>tm/daemon.py</code></li>
+          </ul>
+          <span class="status ready">simplified enough</span>
+        </article>
+      </div>
+
+      <div class="stage">
+        <div class="stage-title">Inputs</div>
+        <article class="node" id="capture">
+          <label><input type="checkbox" checked disabled>Capture imports</label>
+          <p>Local Telegram JSON, UTC single-instance calendar files, and already-transcribed voice notes.</p>
+          <ul class="files">
+            <li><code>tm/commands/capture.py</code></li>
+            <li><code>tests/commands/test_capture_cli.py</code></li>
+          </ul>
+          <span class="status ready">simplified enough</span>
+        </article>
+
+        <article class="node" id="dashboard">
+          <label><input type="checkbox" checked disabled>Dashboard metrics</label>
+          <p>Compact local metrics for events, activities, transcripts, and suggestions.</p>
+          <ul class="files">
+            <li><code>tm/commands/dashboard.py</code></li>
+            <li><code>tests/commands/test_dashboard_export_cli.py</code></li>
+          </ul>
+          <span class="status ready">simplified enough</span>
+        </article>
+
+        <article class="node" id="export-backup">
+          <label><input type="checkbox" checked disabled>Export and backup</label>
+          <p>Private JSON export, SQLite backup, source-output collision guards, and one-transaction reads.</p>
+          <ul class="files">
+            <li><code>tm/commands/export.py</code></li>
+            <li><code>tests/commands/test_dashboard_export_cli.py</code></li>
+          </ul>
+          <span class="status ready">simplified enough</span>
+        </article>
+      </div>
+
+      <div class="stage">
+        <div class="stage-title">Privacy Loop</div>
+        <article class="node" id="encryption-cli">
+          <label><input type="checkbox" checked disabled>Encryption CLI</label>
+          <p>Status and key setup commands around optional SQLCipher/keyring support.</p>
+          <ul class="files">
+            <li><code>tm/commands/encryption.py</code></li>
+            <li><code>tests/commands/test_encryption_cli.py</code></li>
+          </ul>
+          <span class="status ready">simplified enough</span>
+        </article>
+
+        <article class="node" id="privacy">
+          <label><input type="checkbox" checked disabled>Redact and forget</label>
+          <p>Strict selectors, audit rows, transcript/suggestion cleanup, Kuzu projection clearing, and purge warnings.</p>
+          <ul class="files">
+            <li><code>tm/commands/privacy.py</code></li>
+            <li><code>tests/commands/test_privacy_cli.py</code></li>
+          </ul>
+          <span class="status ready">simplified enough</span>
+        </article>
+
+        <article class="node" id="reextract">
+          <label><input type="checkbox" checked disabled>Reextract replay</label>
+          <p>Staged replay of retained transcripts, privacy fencing, and cost-ledger preservation.</p>
+          <ul class="files">
+            <li><code>tm/commands/reextract.py</code></li>
+            <li><code>tests/commands/test_debrief_cli.py</code></li>
+          </ul>
+          <span class="status ready">simplified enough</span>
+        </article>
+      </div>
+
+      <div class="stage">
+        <div class="stage-title">Operations</div>
+        <article class="node" id="daemon">
+          <label><input type="checkbox" checked disabled>Daemon detaching</label>
+          <p>POSIX double-fork detach, explicit path preflights, and foreground default preservation.</p>
+          <ul class="files">
+            <li><code>tm/commands/daemon.py</code>, <code>tm/daemon.py</code></li>
+            <li><code>tests/commands/test_daemon_cli.py</code></li>
+          </ul>
+          <span class="status ready">simplified enough</span>
+        </article>
+
+        <article class="node" id="variants-eval">
+          <label><input type="checkbox" checked disabled>Variant trends and eval gates</label>
+          <p>Previous-window trend labels plus separate live-LLM eval thresholds.</p>
+          <ul class="files">
+            <li><code>tm/commands/variants.py</code></li>
+            <li><code>tests/integration/eval_harness.py</code></li>
+            <li><code>tests/commands/test_variants_cli.py</code></li>
+          </ul>
+          <span class="status ready">simplified enough</span>
+        </article>
+
+        <article class="node terminal" id="cli-docs">
+          <label><input type="checkbox" checked disabled>CLI wiring and notes</label>
+          <p>Command registration, release docs, backlog updates, and implementation decision ledger.</p>
+          <ul class="files">
+            <li><code>tm/cli.py</code>, <code>tm/commands/_shared.py</code></li>
+            <li><code>README.md</code>, <code>docs/release/v1.md</code></li>
+            <li><code>future-implementation-with-autoplan-notes.html</code></li>
+          </ul>
+          <span class="status ready">simplified enough</span>
+        </article>
+      </div>
+    </section>
+  </main>
+</body>
+</html>
