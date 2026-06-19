@@ -1,11 +1,17 @@
 # tm
 
-`tm` is a personal process-mining and outcome-scoring CLI for builders who
-already reflect on their day in free prose, but want a durable event log and a
-small amount of decision support from it. An end-of-day debrief becomes
-structured events in SQLite, process-mining engines find repeated patterns,
-days are scored as `{0, 1, 2}`, and the scheduler suggests at most one concrete
-action per day.
+`tm` is a local-first time intelligence app for builders who already leave a
+trail of notes, calendars, chats, and end-of-day reflections, but want that
+material turned into a usable operating record. It keeps a private SQLite event
+log, connects work back to goals, scores each day as `{0, 1, 2}`, discovers
+repeated patterns, and suggests one concrete next action per day.
+
+The product has two operator surfaces:
+
+- A CLI for capture, debrief, process mining, privacy, export, and automation.
+- A local browser cockpit (`tm web`) for checking status, switching local agent
+  backends, reviewing recent events, importing data, exporting or backing up
+  private data, and running debrief/reextract workflows through the daemon.
 
 ## Status
 
@@ -16,6 +22,22 @@ operator-surface gap (no `tm debrief` / `tm suggest`) was closed in the same
 window. The end-to-end CLI path is now reachable: `tm init → goal add →
 debrief transcript.txt → discover → suggest`. Expect rough edges before using
 it as a daily tool, but the first-user pipeline is no longer programmatic-only.
+
+## What tm Does
+
+- Turns free-prose debriefs into structured activity events with timestamps,
+  lifecycle markers, optional goal links, retained transcripts, and cost
+  accounting.
+- Imports local source material from Telegram JSON exports, iCalendar files, and
+  already-transcribed voice notes.
+- Tracks goals, vocabulary drift, repeated activity variants, bottlenecks,
+  process models, daily outcomes, and scheduler suggestion telemetry.
+- Runs one-action-per-day suggestions behind guardrails for outcome delta,
+  conformance, and per-day rate limiting.
+- Keeps private data local by default, with JSON export, SQLite backup,
+  redaction, forget, reextract, and SQLCipher/keyring status commands.
+- Provides a local web cockpit that wraps the same CLI/daemon capabilities
+  without moving data to a hosted service.
 
 ## Install
 
@@ -36,7 +58,7 @@ transitive packages.
 
 ## Local web cockpit
 
-Install the optional web dependencies and run the local API:
+Install the optional web dependencies and run the local cockpit API:
 
 ```bash
 python -m pip install -e ".[web]"
@@ -52,6 +74,8 @@ npm install
 npm run dev -- --port 5173
 ```
 
+The web API binds to `127.0.0.1` by default, applies migrations on startup, and
+protects private API routes with a per-process token returned by `/api/status`.
 The UI stores its selected local agent in the existing tm data directory as
 `web-config.json`. Local agent auth remains owned by each CLI: Codex, Claude
 Code, Gemini, Kimchi, and OpenClaw are not re-authenticated by tm.
@@ -230,8 +254,10 @@ start reading from the events log.
   - `claude-code`: subprocess to the Claude Code CLI
     (`claude --bare --print --output-format json`); reads `TM_LLM_API_KEY`
     (bridged to `ANTHROPIC_API_KEY` for the subprocess).
-  Unset or empty falls back to `anthropic`. An invalid value fails fast with
-  a clear error listing the valid set.
+  - `gemini`: subprocess to the Gemini CLI in plan/json mode.
+  - `kimchi`: subprocess to the Kimchi CLI in plan/json mode.
+  Unset or empty falls back to `anthropic`. An invalid value fails fast with a
+  clear error listing the valid set.
 - `TM_LLM_MONTHLY_CAP_USD`, soft cap on monthly LLM spend. Default: `$20`.
 - `TM_MAX_PROACTIVE_SUGGESTIONS_PER_DAY`, scheduler rate limit. Default: `1`.
 - `TM_SOCKET`, daemon Unix-socket path. Default:
@@ -252,10 +278,12 @@ it uses `~/.local/share/tm`.
   per-call `sqlite3` repositories for the durable product records.
 - `tm/stores/{sqlite_store,kuzu_store,kuzu_projection}.py`, persistence layer
   for migrations, SQLite storage, Kuzu Petri-net storage, and graph projection.
-- `tm/llm/`, provider-neutral `LLMClient` protocol, `AnthropicAdapter`,
-  `CostMeter`, and typed LLM errors.
-- `tm/daemon.py`, Unix-socket single-writer scaffold for future multi-writer
-  scenarios.
+- `tm/llm/`, provider-neutral `LLMClient` protocol, direct Anthropic adapter,
+  subprocess-backed Codex/Claude Code/Gemini/Kimchi adapters, `CostMeter`, and
+  typed LLM errors.
+- `tm/web/` and `frontend/`, the local browser cockpit API and Vite/React UI.
+- `tm/daemon.py`, Unix-socket single-writer process for multi-writer local
+  automation and web-triggered LLM workflows.
 - `migrations/`, 11 numbered SQL migrations. They are idempotent and
   checksum-verified by the migration runner.
 
