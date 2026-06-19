@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
-import json
 import shutil
 import subprocess
 from typing import Any
 
 from tm.llm._subprocess_json import (
+    build_schema_prompt,
+    build_tools_system,
     extract_json_object,
     read_text_field,
+    run_json_subprocess,
     serialize_messages,
+    usage_int,
 )
 from tm.llm.client import (
     ChatResponse,
@@ -60,8 +63,8 @@ class KimchiAdapter:
         return ChatResponse(
             text=text,
             model=str(payload.get("model") or self._model or KIMCHI_MODEL_LABEL),
-            input_tokens=_usage_int(payload, "input_tokens"),
-            output_tokens=_usage_int(payload, "output_tokens"),
+            input_tokens=usage_int(payload, "input_tokens"),
+            output_tokens=usage_int(payload, "output_tokens"),
             stop_reason="end_turn",
         )
 
@@ -71,19 +74,13 @@ class KimchiAdapter:
         *,
         schema: dict[str, Any],
     ) -> ExtractResponse:
-        schema_json = json.dumps(schema, separators=(",", ":"), sort_keys=True)
-        prompt = (
-            "Respond with one JSON object matching this schema. "
-            "Do not include markdown or prose.\n\n"
-            f"{schema_json}\n\n"
-            f"{serialize_messages(messages)}"
-        )
+        prompt = build_schema_prompt(messages, schema=schema)
         payload = self._invoke_kimchi(prompt)
         text = read_text_field(payload, provider="kimchi")
         data = extract_json_object(text, provider="kimchi")
         usage = Usage(
-            input_tokens=_usage_int(payload, "input_tokens"),
-            output_tokens=_usage_int(payload, "output_tokens"),
+            input_tokens=usage_int(payload, "input_tokens"),
+            output_tokens=usage_int(payload, "output_tokens"),
         )
         return ExtractResponse(data=data, usage=usage)
 
@@ -94,12 +91,7 @@ class KimchiAdapter:
         tools: list[dict[str, Any]],
         system: str | None = None,
     ) -> ToolCallResponse:
-        tools_json = json.dumps(tools, separators=(",", ":"), sort_keys=True)
-        effective_system = (
-            f"{system}\n\nAvailable tools, informational only:\n{tools_json}"
-            if system
-            else f"Available tools, informational only:\n{tools_json}"
-        )
+        effective_system = build_tools_system(system, tools=tools)
         payload = self._invoke_kimchi(
             serialize_messages(messages, system=effective_system)
         )
@@ -108,8 +100,8 @@ class KimchiAdapter:
             text=text,
             tool_calls=[],
             model=str(payload.get("model") or self._model or KIMCHI_MODEL_LABEL),
-            input_tokens=_usage_int(payload, "input_tokens"),
-            output_tokens=_usage_int(payload, "output_tokens"),
+            input_tokens=usage_int(payload, "input_tokens"),
+            output_tokens=usage_int(payload, "output_tokens"),
             stop_reason="end_turn",
         )
 
@@ -128,33 +120,9 @@ class KimchiAdapter:
         return argv
 
     def _invoke_kimchi(self, prompt: str) -> dict[str, Any]:
-        try:
-            completed = subprocess.run(  # noqa: S603 - argv is controlled
-                self._build_argv(prompt),
-                capture_output=True,
-                text=True,
-                timeout=self._timeout_s,
-                check=False,
-            )
-        except subprocess.TimeoutExpired as exc:
-            raise LLMClientError(f"kimchi timed out after {self._timeout_s}s") from exc
-        if completed.returncode != 0:
-            stderr_tail = (completed.stderr or "").strip()[-500:]
-            raise LLMClientError(f"kimchi exited {completed.returncode}: {stderr_tail}")
-        try:
-            payload = json.loads(completed.stdout or "{}")
-        except json.JSONDecodeError as exc:
-            head = (completed.stdout or "")[:200]
-            raise LLMClientError(f"kimchi returned non-JSON stdout: {head}") from exc
-        if not isinstance(payload, dict):
-            raise LLMClientError("kimchi returned non-object JSON stdout")
-        return payload
-
-
-def _usage_int(payload: dict[str, Any], key: str) -> int:
-    usage = payload.get("usage")
-    value = usage.get(key) if isinstance(usage, dict) else payload.get(key)
-    try:
-        return int(value or 0)
-    except (TypeError, ValueError):
-        return 0
+        return run_json_subprocess(
+            self._build_argv(prompt),
+            provider="kimchi",
+            timeout_s=self._timeout_s,
+            run=subprocess.run,
+        )

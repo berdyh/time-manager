@@ -153,6 +153,8 @@ _log = logging.getLogger(__name__)
 # - Everything else: classic write handler, serialised under ``self._lock``.
 _READ_METHODS = frozenset({"ping", "check_budget"})
 _LLM_METHODS = frozenset({"run_debrief", "propose_suggestion"})
+_API_KEY_BACKENDS = frozenset({"anthropic", "claude-code"})
+_DEFAULT_API_MODEL = "claude-sonnet-4-6"
 
 
 def _build_llm_client(
@@ -173,17 +175,53 @@ def _build_llm_client(
     return build_llm_client(backend=backend, model=model, max_tokens=max_tokens)
 
 
+def _nonempty_str(value: Any) -> str | None:
+    return str(value) if isinstance(value, str) and value else None
+
+
+def _optional_int(value: Any) -> int | None:
+    return int(value) if isinstance(value, int) else None
+
+
+@dataclass(frozen=True)
+class _LLMRequestClient:
+    client: LLMClient
+    requested_model: str | None
+    requested_max_tokens: int | None
+
+
 def _backend_requires_tm_api_key(params: dict[str, Any]) -> bool:
-    backend = params.get("backend")
-    if not isinstance(backend, str) or not backend:
-        backend = DEFAULT_BACKEND
-    return backend in {"anthropic", "claude-code"}
+    backend = _nonempty_str(params.get("backend")) or DEFAULT_BACKEND
+    return backend in _API_KEY_BACKENDS
 
 
 def _default_model_for_backend(backend: str | None) -> str | None:
-    if backend is None or backend in {"anthropic", "claude-code"}:
-        return "claude-sonnet-4-6"
+    if (backend or DEFAULT_BACKEND) in _API_KEY_BACKENDS:
+        return _DEFAULT_API_MODEL
     return None
+
+
+def _build_request_llm_client(
+    params: dict[str, Any],
+    *,
+    default_max_tokens: int,
+    allow_max_tokens_override: bool,
+) -> _LLMRequestClient:
+    backend = _nonempty_str(params.get("backend"))
+    requested_model = _nonempty_str(params.get("model"))
+    requested_max_tokens = (
+        _optional_int(params.get("max_tokens")) if allow_max_tokens_override else None
+    )
+    client = _build_llm_client(
+        model=requested_model or _default_model_for_backend(backend),
+        max_tokens=requested_max_tokens or default_max_tokens,
+        backend=backend,
+    )
+    return _LLMRequestClient(
+        client=client,
+        requested_model=requested_model,
+        requested_max_tokens=requested_max_tokens,
+    )
 
 
 def _llm_envelope(
@@ -777,20 +815,14 @@ class TMDaemon:
         if not isinstance(case_date_raw, str) or not case_date_raw:
             raise ValueError("case_date must be a non-empty string")
 
-        model = params.get("model")
-        model_str = str(model) if isinstance(model, str) and model else None
-        backend = params.get("backend")
-        backend_str = str(backend) if isinstance(backend, str) and backend else None
-        max_tokens = params.get("max_tokens")
-        max_tokens_int = int(max_tokens) if isinstance(max_tokens, int) else None
-
         # Build LLM client + agent dependencies per-request. The factory
         # is module-level so tests can patch it cleanly.
-        llm = _build_llm_client(
-            model=model_str or _default_model_for_backend(backend_str),
-            max_tokens=max_tokens_int or 4096,
-            backend=backend_str,
+        llm_request = _build_request_llm_client(
+            params,
+            default_max_tokens=4096,
+            allow_max_tokens_override=True,
         )
+        llm = llm_request.client
 
         vocab_repo = VocabularyRepository(self._db_path)
         events_repo = EventsRepository(self._db_path)
@@ -804,10 +836,10 @@ class TMDaemon:
             "events_repo": events_repo,
             "cost_meter": self._cost_meter,
         }
-        if model_str is not None:
-            agent_kwargs["model"] = model_str
-        if max_tokens_int is not None:
-            agent_kwargs["max_tokens"] = max_tokens_int
+        if llm_request.requested_model is not None:
+            agent_kwargs["model"] = llm_request.requested_model
+        if llm_request.requested_max_tokens is not None:
+            agent_kwargs["max_tokens"] = llm_request.requested_max_tokens
 
         agent = DebriefAgent(**agent_kwargs)
         result = agent.extract_and_persist(
@@ -856,18 +888,15 @@ class TMDaemon:
             raise ValueError("case_goal_id must be a string or null")
         case_goal_id = case_goal_id_raw or None
 
-        model = params.get("model")
-        model_str = str(model) if isinstance(model, str) and model else None
-        backend = params.get("backend")
-        backend_str = str(backend) if isinstance(backend, str) and backend else None
         max_per_day_raw = params.get("max_per_day")
         max_per_day = int(max_per_day_raw) if isinstance(max_per_day_raw, int) else None
 
-        llm = _build_llm_client(
-            model=model_str or _default_model_for_backend(backend_str),
-            max_tokens=1024,
-            backend=backend_str,
+        llm_request = _build_request_llm_client(
+            params,
+            default_max_tokens=1024,
+            allow_max_tokens_override=False,
         )
+        llm = llm_request.client
 
         events_repo = EventsRepository(self._db_path)
         goals_repo = GoalsRepository(self._db_path)
@@ -892,8 +921,8 @@ class TMDaemon:
             "cost_meter": self._cost_meter,
             "max_proactive_per_day": max_per_day,
         }
-        if model_str is not None:
-            agent_kwargs["model"] = model_str
+        if llm_request.requested_model is not None:
+            agent_kwargs["model"] = llm_request.requested_model
 
         agent = SchedulerAgent(**agent_kwargs)
         outcome = agent.propose_suggestion(
