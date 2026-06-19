@@ -146,19 +146,25 @@ def _fetch_cost_rows_after(db_path: Path, cost_id: int) -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
-def _append_cost_rows(db_path: Path, rows: list[dict[str, Any]]) -> None:
+def _insert_cost_rows(conn: Any, rows: list[dict[str, Any]]) -> None:
     if not rows:
         return
     column_sql = ", ".join(_COST_COLUMNS)
     placeholder_sql = ", ".join("?" for _ in _COST_COLUMNS)
+    conn.executemany(
+        f"INSERT INTO cost_ledger ({column_sql}) VALUES ({placeholder_sql})",
+        ([row[column] for column in _COST_COLUMNS] for row in rows),
+    )
+
+
+def _append_cost_rows(db_path: Path, rows: list[dict[str, Any]]) -> None:
+    if not rows:
+        return
     conn = connect_sqlite(db_path)
     try:
         enable_wal_mode(conn, db_path)
         with conn:
-            conn.executemany(
-                f"INSERT INTO cost_ledger ({column_sql}) VALUES ({placeholder_sql})",
-                ([row[column] for column in _COST_COLUMNS] for row in rows),
-            )
+            _insert_cost_rows(conn, rows)
     finally:
         harden_sqlite_file_permissions(db_path)
         conn.close()
@@ -175,8 +181,6 @@ def _replace_debrief_events(
 ) -> int:
     event_column_sql = ", ".join(_EVENT_COLUMNS)
     event_placeholder_sql = ", ".join("?" for _ in _EVENT_COLUMNS)
-    cost_column_sql = ", ".join(_COST_COLUMNS)
-    cost_placeholder_sql = ", ".join("?" for _ in _COST_COLUMNS)
     conn = connect_sqlite(db_path, isolation_level=None, row_factory=True)
     try:
         enable_wal_mode(conn, db_path)
@@ -198,11 +202,7 @@ def _replace_debrief_events(
             f"INSERT INTO events ({event_column_sql}) VALUES ({event_placeholder_sql})",
             ([event[column] for column in _EVENT_COLUMNS] for event in events),
         )
-        conn.executemany(
-            f"INSERT INTO cost_ledger ({cost_column_sql}) "
-            f"VALUES ({cost_placeholder_sql})",
-            ([row[column] for column in _COST_COLUMNS] for row in cost_rows),
-        )
+        _insert_cost_rows(conn, cost_rows)
         if replacement_transcript is not None:
             conn.execute(
                 "INSERT INTO transcripts "
@@ -281,13 +281,11 @@ def reextract(
             err=True,
         )
         raise typer.Exit(1)
-    transcript_text = (
-        replacement_transcript
-        if replacement_transcript is not None
-        else record.transcript_text
-        if record is not None
-        else ""
-    )
+    if replacement_transcript is not None:
+        transcript_text = replacement_transcript
+    else:
+        assert record is not None
+        transcript_text = record.transcript_text
 
     with tempfile.TemporaryDirectory(prefix="tm-reextract-") as tmpdir:
         staging_db = Path(tmpdir) / "staging.db"

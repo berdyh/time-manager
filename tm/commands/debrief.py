@@ -169,13 +169,8 @@ def debrief(
             case_date=resolved_case_date,
         )
     except DuplicateSummaryError as exc:
-        # Race-induced single-summary collision (post-/simplify the daemon's
-        # coarse write lock no longer serialises LLM-backed handlers, so two
-        # concurrent ``run_debrief`` RPCs for the same case_date can both
-        # pass the pre-call SELECT and then collide at INSERT — caught by
-        # the partial UNIQUE index added in migration 0010). The CLI is the
-        # operator boundary: render a friendly message and exit 1 rather
-        # than let the exception traceback through.
+        # Convert race-induced summary collisions into an operator-friendly
+        # CLI error instead of leaking a traceback.
         typer.echo(
             f"Debrief skipped: a summary already exists for "
             f"case_date={exc.case_date}. Use 'tm reextract' (v1.1) to "

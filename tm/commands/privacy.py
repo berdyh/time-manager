@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import shutil
+from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Any
@@ -74,6 +75,12 @@ def _redact_value(value: Any, replacement: str) -> Any:
     return value
 
 
+def _redacted_activity(activity: str, replacement: str) -> str:
+    if activity == "debrief_summary":
+        return "debrief_summary"
+    return replacement
+
+
 def _case_date_from_timestamp(timestamp: Any) -> str | None:
     raw = str(timestamp or "").strip()
     for separator in ("T", " "):
@@ -93,6 +100,33 @@ def _case_date_for_event(row: Any) -> str | None:
     if row["case_date"]:
         return str(row["case_date"])
     return _case_date_from_timestamp(row["timestamp"])
+
+
+def _redact_case_artifacts(
+    conn: Any, case_dates: Iterable[str], replacement: str
+) -> int:
+    transcript_count = 0
+    for case_date in case_dates:
+        cur = conn.execute(
+            "UPDATE transcripts SET transcript_text=? WHERE case_date=?",
+            (replacement, case_date),
+        )
+        transcript_count += int(cur.rowcount)
+        conn.execute(
+            "UPDATE suggestion_telemetry "
+            "SET recommended_action=?, llm_explanation_text=? "
+            "WHERE case_date=?",
+            (replacement, replacement, case_date),
+        )
+    return transcript_count
+
+
+def _delete_case_artifacts(conn: Any, case_date: str | None) -> int:
+    if not case_date:
+        return 0
+    cur = conn.execute("DELETE FROM transcripts WHERE case_date=?", (case_date,))
+    conn.execute("DELETE FROM suggestion_telemetry WHERE case_date=?", (case_date,))
+    return int(cur.rowcount)
 
 
 def _log_action(
@@ -230,29 +264,15 @@ def redact(
                 "UPDATE events SET activity=?, resource=NULL, attributes_json=? "
                 "WHERE event_id=?",
                 (
-                    (
-                        "debrief_summary"
-                        if row["activity"] == "debrief_summary"
-                        else replacement
-                    ),
+                    _redacted_activity(row["activity"], replacement),
                     _redact_attributes(row["attributes_json"], replacement),
                     row["event_id"],
                 ),
             )
-        transcript_count = 0
-        target_case_dates = [case_date] if case_date else sorted(transcript_case_dates)
-        for transcript_case_date in target_case_dates:
-            cur = conn.execute(
-                "UPDATE transcripts SET transcript_text=? WHERE case_date=?",
-                (replacement, transcript_case_date),
-            )
-            transcript_count += int(cur.rowcount)
-            conn.execute(
-                "UPDATE suggestion_telemetry "
-                "SET recommended_action=?, llm_explanation_text=? "
-                "WHERE case_date=?",
-                (replacement, replacement, transcript_case_date),
-            )
+        target_case_dates = (
+            [case_date] if case_date is not None else sorted(transcript_case_dates)
+        )
+        transcript_count = _redact_case_artifacts(conn, target_case_dates, replacement)
         _log_action(
             conn,
             action_type="redact",
@@ -300,35 +320,18 @@ def forget(
     try:
         _harden_sqlite_deletes(conn)
         conn.execute("BEGIN IMMEDIATE")
-        transcript_case_date: str | None = None
+        target_case_date = case_date
         if event_id:
             event_row = conn.execute(
                 "SELECT case_date, timestamp FROM events WHERE event_id=?", (event_id,)
             ).fetchone()
-            transcript_case_date = _case_date_for_event(event_row)
+            target_case_date = _case_date_for_event(event_row)
         row = conn.execute(
             f"SELECT COUNT(*) FROM events WHERE {where_sql}", params
         ).fetchone()
         affected_events = int(row[0]) if row else 0
         conn.execute(f"DELETE FROM events WHERE {where_sql}", params)
-        transcript_count = 0
-        if case_date:
-            cur = conn.execute(
-                "DELETE FROM transcripts WHERE case_date=?", (case_date,)
-            )
-            transcript_count = int(cur.rowcount)
-            conn.execute(
-                "DELETE FROM suggestion_telemetry WHERE case_date=?", (case_date,)
-            )
-        elif transcript_case_date:
-            cur = conn.execute(
-                "DELETE FROM transcripts WHERE case_date=?", (transcript_case_date,)
-            )
-            transcript_count = int(cur.rowcount)
-            conn.execute(
-                "DELETE FROM suggestion_telemetry WHERE case_date=?",
-                (transcript_case_date,),
-            )
+        transcript_count = _delete_case_artifacts(conn, target_case_date)
         _log_action(
             conn,
             action_type="forget",
@@ -344,7 +347,7 @@ def forget(
         raise
     finally:
         conn.close()
-    show_transcript_count = bool(case_date) or bool(transcript_case_date)
+    show_transcript_count = bool(target_case_date)
     typer.echo(
         f"forgot {affected_events} events"
         + (f" and {transcript_count} transcripts" if show_transcript_count else "")
