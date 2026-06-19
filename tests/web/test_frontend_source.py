@@ -11,3 +11,12 @@ def test_debrief_run_button_posts_to_debrief_api() -> None:
     assert 'debrief: "/api/debrief"' in source
     assert "onDebrief" in source
     assert "onClick={() => onDebrief(caseDate, replacementTranscript)}" in source
+
+
+def test_private_frontend_reads_send_status_token() -> None:
+    source = Path("frontend/src/main.tsx").read_text(encoding="utf-8")
+
+    assert "const status = await getJson<StatusPayload>(API.status);" in source
+    assert "const apiToken = status.api_token;" in source
+    assert "getJson<{ agents: Agent[] }>(API.agents, apiToken)" in source
+    assert "getJson<ExportPayload>(API.export, apiToken)" in source

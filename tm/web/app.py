@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import secrets
+from ipaddress import ip_address
 from pathlib import Path
 from typing import Any
 
@@ -216,9 +217,13 @@ def create_app(
             transcript=transcript_str,
         )
 
-    def guarded(endpoint: Any) -> Any:
+    def guarded(endpoint: Any, *, require_token: bool = True) -> Any:
         async def guarded_endpoint(request: Any) -> Any:
-            blocked = _mutation_guard(request, web_token)
+            blocked = _web_request_guard(
+                request,
+                web_token,
+                require_token=require_token,
+            )
             if blocked is not None:
                 return blocked
             return await endpoint(request)
@@ -236,18 +241,18 @@ def create_app(
         )
 
     routes: list[Any] = [
-        Route("/api/status", status, methods=["GET"]),
-        Route("/api/capabilities", capabilities, methods=["GET"]),
-        Route("/api/agents", agents, methods=["GET"]),
+        Route("/api/status", guarded(status, require_token=False), methods=["GET"]),
+        Route("/api/capabilities", guarded(capabilities), methods=["GET"]),
+        Route("/api/agents", guarded(agents), methods=["GET"]),
         Route("/api/agents/select", guarded(select_agent), methods=["POST"]),
-        Route("/api/now", now, methods=["GET"]),
-        Route("/api/dashboard", dashboard, methods=["GET"]),
+        Route("/api/now", guarded(now), methods=["GET"]),
+        Route("/api/dashboard", guarded(dashboard), methods=["GET"]),
         Route("/api/debrief", guarded(run_debrief), methods=["POST"]),
         Route("/api/suggest", guarded(suggest), methods=["POST"]),
         Route("/api/capture/telegram", guarded(capture_telegram_api), methods=["POST"]),
         Route("/api/capture/calendar", guarded(capture_calendar_api), methods=["POST"]),
         Route("/api/capture/voice", guarded(capture_voice_api), methods=["POST"]),
-        Route("/api/export", export_api, methods=["GET"]),
+        Route("/api/export", guarded(export_api), methods=["GET"]),
         Route("/api/backup", guarded(backup_api), methods=["POST"]),
         Route("/api/privacy/redact", guarded(privacy_redact_api), methods=["POST"]),
         Route("/api/privacy/forget", guarded(privacy_forget_api), methods=["POST"]),
@@ -262,7 +267,24 @@ def create_app(
 
 
 def _mutation_guard(request: Any, web_token: str) -> Any | None:
+    return _web_request_guard(request, web_token, require_token=True)
+
+
+def _web_request_guard(
+    request: Any,
+    web_token: str,
+    *,
+    require_token: bool,
+) -> Any | None:
     from starlette.responses import JSONResponse
+
+    client = getattr(request, "client", None)
+    host = getattr(client, "host", None)
+    if host and not _is_loopback_host(str(host)):
+        return JSONResponse(
+            {"ok": False, "error": "remote web access blocked"},
+            status_code=403,
+        )
 
     sec_fetch_site = str(request.headers.get("sec-fetch-site", "")).lower()
     if sec_fetch_site == "cross-site":
@@ -270,6 +292,9 @@ def _mutation_guard(request: Any, web_token: str) -> Any | None:
             {"ok": False, "error": "cross-site request blocked"},
             status_code=403,
         )
+
+    if not require_token:
+        return None
 
     supplied_token = request.headers.get(_WEB_TOKEN_HEADER)
     if not isinstance(supplied_token, str) or not secrets.compare_digest(
@@ -280,6 +305,15 @@ def _mutation_guard(request: Any, web_token: str) -> Any | None:
             status_code=403,
         )
     return None
+
+
+def _is_loopback_host(host: str) -> bool:
+    if host == "testclient":
+        return True
+    try:
+        return ip_address(host).is_loopback
+    except ValueError:
+        return host == "localhost"
 
 
 def _daemon_call(

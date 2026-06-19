@@ -147,8 +147,15 @@ const initialState: ApiState = {
   capabilities: null
 };
 
-async function getJson<T>(path: string): Promise<T> {
-  const response = await fetch(path);
+function tokenHeaders(apiToken: string | null | undefined): Record<string, string> {
+  return apiToken ? { "x-tm-web-token": apiToken } : {};
+}
+
+async function getJson<T>(
+  path: string,
+  apiToken?: string | null | undefined
+): Promise<T> {
+  const response = await fetch(path, { headers: tokenHeaders(apiToken) });
   if (!response.ok) {
     throw new Error(`${path} ${response.status}`);
   }
@@ -161,9 +168,7 @@ async function postJson<T>(
   apiToken: string | null | undefined
 ): Promise<T> {
   const headers: Record<string, string> = { "content-type": "application/json" };
-  if (apiToken) {
-    headers["x-tm-web-token"] = apiToken;
-  }
+  Object.assign(headers, tokenHeaders(apiToken));
   const response = await fetch(path, {
     method: "POST",
     headers,
@@ -178,12 +183,13 @@ async function postJson<T>(
 }
 
 async function loadApiState(): Promise<ApiState> {
-  const [status, agents, dashboard, now, capabilities] = await Promise.all([
-    getJson<StatusPayload>(API.status),
-    getJson<{ agents: Agent[] }>(API.agents),
-    getJson<DashboardPayload>(API.dashboard),
-    getJson<NowPayload>(API.now),
-    getJson<Capabilities>(API.capabilities)
+  const status = await getJson<StatusPayload>(API.status);
+  const apiToken = status.api_token;
+  const [agents, dashboard, now, capabilities] = await Promise.all([
+    getJson<{ agents: Agent[] }>(API.agents, apiToken),
+    getJson<DashboardPayload>(API.dashboard, apiToken),
+    getJson<NowPayload>(API.now, apiToken),
+    getJson<Capabilities>(API.capabilities, apiToken)
   ]);
   return {
     status,
@@ -244,7 +250,7 @@ function App() {
 
   function exportData() {
     return runAction("Export prepared", async () => {
-      const payload = await getJson<ExportPayload>(API.export);
+      const payload = await getJson<ExportPayload>(API.export, apiToken);
       downloadJson("tm-export.json", payload.tables);
     });
   }
