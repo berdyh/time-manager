@@ -98,6 +98,45 @@ type ApiState = {
   capabilities: Capabilities | null;
 };
 
+type StatusTone = "good" | "warn" | "neutral";
+
+type StatusPillProps = {
+  icon: React.ReactNode;
+  label: string;
+  value: string;
+  tone: StatusTone;
+};
+
+type ExportPayload = {
+  tables: Record<string, unknown[]>;
+  rows_exported: number;
+};
+
+const API = {
+  status: "/api/status",
+  agents: "/api/agents",
+  dashboard: "/api/dashboard",
+  now: "/api/now",
+  capabilities: "/api/capabilities",
+  selectAgent: "/api/agents/select",
+  export: "/api/export",
+  backup: "/api/backup",
+  captureTelegram: "/api/capture/telegram",
+  captureCalendar: "/api/capture/calendar",
+  captureVoice: "/api/capture/voice",
+  privacyRedact: "/api/privacy/redact",
+  privacyForget: "/api/privacy/forget",
+  reextract: "/api/reextract"
+} as const;
+
+const RAIL_ITEMS = [
+  { href: "#now", label: "Now", Icon: Gauge },
+  { href: "#debrief", label: "Debrief", Icon: MessageSquareText },
+  { href: "#plan", label: "Plan", Icon: CalendarClock },
+  { href: "#agents", label: "Agents", Icon: Bot },
+  { href: "#data", label: "Data", Icon: Database }
+] as const;
+
 const initialState: ApiState = {
   status: null,
   agents: [],
@@ -128,6 +167,27 @@ async function postJson<T>(path: string, payload: unknown): Promise<T> {
   return data;
 }
 
+async function loadApiState(): Promise<ApiState> {
+  const [status, agents, dashboard, now, capabilities] = await Promise.all([
+    getJson<StatusPayload>(API.status),
+    getJson<{ agents: Agent[] }>(API.agents),
+    getJson<DashboardPayload>(API.dashboard),
+    getJson<NowPayload>(API.now),
+    getJson<Capabilities>(API.capabilities)
+  ]);
+  return {
+    status,
+    agents: agents.agents,
+    dashboard,
+    now,
+    capabilities
+  };
+}
+
+function errorMessage(err: unknown, fallback: string) {
+  return err instanceof Error ? err.message : fallback;
+}
+
 function App() {
   const [state, setState] = React.useState<ApiState>(initialState);
   const [error, setError] = React.useState<string | null>(null);
@@ -135,23 +195,10 @@ function App() {
 
   const refresh = React.useCallback(async () => {
     try {
-      const [status, agents, dashboard, now, capabilities] = await Promise.all([
-        getJson<StatusPayload>("/api/status"),
-        getJson<{ agents: Agent[] }>("/api/agents"),
-        getJson<DashboardPayload>("/api/dashboard"),
-        getJson<NowPayload>("/api/now"),
-        getJson<Capabilities>("/api/capabilities")
-      ]);
-      setState({
-        status,
-        agents: agents.agents,
-        dashboard,
-        now,
-        capabilities
-      });
+      setState(await loadApiState());
       setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "API unavailable");
+      setError(errorMessage(err, "API unavailable"));
     }
   }, []);
 
@@ -163,7 +210,7 @@ function App() {
     state.agents.find((agent) => agent.selected) ?? state.agents[0] ?? null;
 
   async function selectAgent(agentId: string) {
-    await fetch("/api/agents/select", {
+    await fetch(API.selectAgent, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ agent_id: agentId })
@@ -178,9 +225,49 @@ function App() {
       await refresh();
       setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Action failed");
+      setError(errorMessage(err, "Action failed"));
     }
   }
+
+  function postAction(label: string, path: string, payload: unknown) {
+    return runAction(label, async () => {
+      await postJson(path, payload);
+    });
+  }
+
+  function exportData() {
+    return runAction("Export prepared", async () => {
+      const payload = await getJson<ExportPayload>(API.export);
+      downloadJson("tm-export.json", payload.tables);
+    });
+  }
+
+  const statusPills: StatusPillProps[] = [
+    {
+      icon: <TimerReset size={16} />,
+      label: "Daemon",
+      value: state.status?.daemon.alive ? "alive" : "down",
+      tone: state.status?.daemon.alive ? "good" : "warn"
+    },
+    {
+      icon: <Bot size={16} />,
+      label: "Agent",
+      value: selectedAgent?.label ?? state.status?.selected_agent ?? "none",
+      tone: selectedAgent?.healthy ? "good" : "warn"
+    },
+    {
+      icon: <Activity size={16} />,
+      label: "Spend",
+      value: formatCost(state.status),
+      tone: "neutral"
+    },
+    {
+      icon: <LockKeyhole size={16} />,
+      label: "Storage",
+      value: state.status?.encryption.available ? "encrypted" : "local",
+      tone: state.status?.encryption.available ? "good" : "neutral"
+    }
+  ];
 
   return (
     <main className="shell">
@@ -189,54 +276,24 @@ function App() {
           <CircleDot size={18} />
           <span>tm</span>
         </div>
-        <a className="rail-item active" href="#now" title="Now">
-          <Gauge size={18} />
-          <span>Now</span>
-        </a>
-        <a className="rail-item" href="#debrief" title="Debrief">
-          <MessageSquareText size={18} />
-          <span>Debrief</span>
-        </a>
-        <a className="rail-item" href="#plan" title="Plan">
-          <CalendarClock size={18} />
-          <span>Plan</span>
-        </a>
-        <a className="rail-item" href="#agents" title="Agents">
-          <Bot size={18} />
-          <span>Agents</span>
-        </a>
-        <a className="rail-item" href="#data" title="Data">
-          <Database size={18} />
-          <span>Data</span>
-        </a>
+        {RAIL_ITEMS.map(({ href, label, Icon }) => (
+          <a
+            key={href}
+            className={href === "#now" ? "rail-item active" : "rail-item"}
+            href={href}
+            title={label}
+          >
+            <Icon size={18} />
+            <span>{label}</span>
+          </a>
+        ))}
       </nav>
 
       <section className="workspace">
         <header className="status-strip">
-          <StatusPill
-            icon={<TimerReset size={16} />}
-            label="Daemon"
-            value={state.status?.daemon.alive ? "alive" : "down"}
-            tone={state.status?.daemon.alive ? "good" : "warn"}
-          />
-          <StatusPill
-            icon={<Bot size={16} />}
-            label="Agent"
-            value={selectedAgent?.label ?? state.status?.selected_agent ?? "none"}
-            tone={selectedAgent?.healthy ? "good" : "warn"}
-          />
-          <StatusPill
-            icon={<Activity size={16} />}
-            label="Spend"
-            value={formatCost(state.status)}
-            tone="neutral"
-          />
-          <StatusPill
-            icon={<LockKeyhole size={16} />}
-            label="Storage"
-            value={state.status?.encryption.available ? "encrypted" : "local"}
-            tone={state.status?.encryption.available ? "good" : "neutral"}
-          />
+          {statusPills.map((pill) => (
+            <StatusPill key={pill.label} {...pill} />
+          ))}
           <button className="icon-button" onClick={() => void refresh()} title="Refresh">
             <RefreshCw size={17} />
           </button>
@@ -252,61 +309,42 @@ function App() {
           <DataPanel
             dashboard={state.dashboard}
             capabilities={state.capabilities}
-            onExport={() =>
-              runAction("Export prepared", async () => {
-                const payload = await getJson<{
-                  tables: Record<string, unknown[]>;
-                  rows_exported: number;
-                }>("/api/export");
-                downloadJson("tm-export.json", payload.tables);
-              })
-            }
+            onExport={exportData}
             onBackup={(outputPath) =>
-              runAction("Backup written", async () => {
-                await postJson("/api/backup", {
-                  output_path: outputPath,
-                  overwrite: true
-                });
+              postAction("Backup written", API.backup, {
+                output_path: outputPath,
+                overwrite: true
               })
             }
           />
           <CapturePanel
             onTelegram={(content) =>
-              runAction("Telegram capture imported", async () => {
-                await postJson("/api/capture/telegram", { content });
-              })
+              postAction("Telegram capture imported", API.captureTelegram, { content })
             }
             onCalendar={(content) =>
-              runAction("Calendar capture imported", async () => {
-                await postJson("/api/capture/calendar", { content });
-              })
+              postAction("Calendar capture imported", API.captureCalendar, { content })
             }
             onVoice={(caseDate, transcript) =>
-              runAction("Voice transcript captured", async () => {
-                await postJson("/api/capture/voice", { case_date: caseDate, transcript });
+              postAction("Voice transcript captured", API.captureVoice, {
+                case_date: caseDate,
+                transcript
               })
             }
           />
           <PrivacyPanel
             onRedact={(payload) =>
-              runAction("Privacy redaction complete", async () => {
-                await postJson("/api/privacy/redact", payload);
-              })
+              postAction("Privacy redaction complete", API.privacyRedact, payload)
             }
             onForget={(payload) =>
-              runAction("Privacy forget complete", async () => {
-                await postJson("/api/privacy/forget", payload);
-              })
+              postAction("Privacy forget complete", API.privacyForget, payload)
             }
           />
           <DebriefPanel
             now={state.now}
             onReextract={(caseDate, transcript) =>
-              runAction("Reextract requested", async () => {
-                await postJson("/api/reextract", {
-                  case_date: caseDate,
-                  transcript: transcript || undefined
-                });
+              postAction("Reextract requested", API.reextract, {
+                case_date: caseDate,
+                transcript: transcript || undefined
               })
             }
           />
@@ -321,12 +359,7 @@ function StatusPill({
   label,
   value,
   tone
-}: {
-  icon: React.ReactNode;
-  label: string;
-  value: string;
-  tone: "good" | "warn" | "neutral";
-}) {
+}: StatusPillProps) {
   return (
     <div className={`status-pill ${tone}`}>
       {icon}
