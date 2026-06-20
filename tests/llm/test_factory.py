@@ -33,6 +33,8 @@ from tm.llm.factory import (
     VALID_BACKENDS,
     build_llm_client,
 )
+from tm.llm.gemini_adapter import GeminiAdapter
+from tm.llm.kimchi_adapter import KimchiAdapter
 
 # --------------------------------------------------------------------- fixtures
 
@@ -61,13 +63,33 @@ def _stub_claude_binary(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
+@pytest.fixture
+def _stub_gemini_binary(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make ``shutil.which("gemini")`` return a fake path."""
+    monkeypatch.setattr(
+        "tm.llm.gemini_adapter.shutil.which",
+        lambda name: "/usr/bin/true" if name == "gemini" else None,
+    )
+
+
+@pytest.fixture
+def _stub_kimchi_binary(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make ``shutil.which("kimchi")`` return a fake path."""
+    monkeypatch.setattr(
+        "tm.llm.kimchi_adapter.shutil.which",
+        lambda name: "/usr/bin/true" if name == "kimchi" else None,
+    )
+
+
 # ---------------------------------------------------------------- module shape
 
 
 def test_module_exports_constants() -> None:
     assert BACKEND_ENV == "TM_LLM_BACKEND"
     assert DEFAULT_BACKEND == "anthropic"
-    assert VALID_BACKENDS == frozenset({"anthropic", "codex", "claude-code"})
+    assert VALID_BACKENDS == frozenset(
+        {"anthropic", "codex", "claude-code", "gemini", "kimchi"}
+    )
 
 
 # ---------------------------------------------------------------- defaulting
@@ -124,6 +146,24 @@ def test_env_var_claude_code_selects_claude_code(
     assert isinstance(client, ClaudeCodeAdapter)
 
 
+def test_env_var_gemini_selects_gemini(
+    monkeypatch: pytest.MonkeyPatch,
+    _stub_gemini_binary: None,
+) -> None:
+    monkeypatch.setenv(BACKEND_ENV, "gemini")
+    client = build_llm_client()
+    assert isinstance(client, GeminiAdapter)
+
+
+def test_env_var_kimchi_selects_kimchi(
+    monkeypatch: pytest.MonkeyPatch,
+    _stub_kimchi_binary: None,
+) -> None:
+    monkeypatch.setenv(BACKEND_ENV, "kimchi")
+    client = build_llm_client()
+    assert isinstance(client, KimchiAdapter)
+
+
 def test_explicit_backend_arg_overrides_env(
     monkeypatch: pytest.MonkeyPatch,
     _set_api_key: None,
@@ -159,14 +199,19 @@ def test_unknown_env_value_includes_valid_set_in_error(
     with pytest.raises(LLMClientError) as exc_info:
         build_llm_client()
     # The factory formats sorted(VALID_BACKENDS) into the message.
-    assert "['anthropic', 'claude-code', 'codex']" in str(exc_info.value)
+    msg = str(exc_info.value)
+    assert "anthropic" in msg
+    assert "claude-code" in msg
+    assert "codex" in msg
+    assert "gemini" in msg
+    assert "kimchi" in msg
 
 
 def test_explicit_invalid_backend_arg_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     """Explicit invalid arg is validated even when env is valid."""
     monkeypatch.setenv(BACKEND_ENV, "anthropic")
-    with pytest.raises(LLMClientError, match="invalid TM_LLM_BACKEND='gemini'"):
-        build_llm_client(backend="gemini")
+    with pytest.raises(LLMClientError, match="invalid TM_LLM_BACKEND='grok'"):
+        build_llm_client(backend="grok")
 
 
 # ----------------------------------------------------------- kwarg forwarding
@@ -217,6 +262,32 @@ def test_model_forwarded_to_claude_code(monkeypatch: pytest.MonkeyPatch) -> None
 
     build_llm_client(backend="claude-code", model="sonnet", max_tokens=8192)
     assert captured == {"model": "sonnet", "max_tokens": 8192}
+
+
+def test_model_forwarded_to_gemini(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    def _capture(**kwargs: object) -> object:
+        captured.update(kwargs)
+        return MagicMock(name="GeminiAdapter")
+
+    monkeypatch.setattr("tm.llm.gemini_adapter.GeminiAdapter", _capture)
+
+    build_llm_client(backend="gemini", model="gemini-latest", max_tokens=2048)
+    assert captured == {"model": "gemini-latest", "max_tokens": 2048}
+
+
+def test_model_forwarded_to_kimchi(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    def _capture(**kwargs: object) -> object:
+        captured.update(kwargs)
+        return MagicMock(name="KimchiAdapter")
+
+    monkeypatch.setattr("tm.llm.kimchi_adapter.KimchiAdapter", _capture)
+
+    build_llm_client(backend="kimchi", model="kimchi-dev/minimax-m3", max_tokens=2048)
+    assert captured == {"model": "kimchi-dev/minimax-m3", "max_tokens": 2048}
 
 
 def test_max_tokens_none_uses_anthropic_default(

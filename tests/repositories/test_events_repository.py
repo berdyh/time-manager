@@ -196,6 +196,16 @@ def test_query_limit(tmp_path: Path) -> None:
     assert rows[1]["event_id"] == "E002"
 
 
+def test_query_limit_desc_returns_newest_rows(tmp_path: Path) -> None:
+    events_repo, _ = _make_repos(tmp_path)
+    _seed_events(events_repo)
+
+    rows = events_repo.query_events(limit=2, order="desc")
+    assert len(rows) == 2
+    assert rows[0]["event_id"] == "E003"
+    assert rows[1]["event_id"] == "E002"
+
+
 # ---------------------------------------------------------------------------
 # count_advancing_goal
 # ---------------------------------------------------------------------------

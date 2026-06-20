@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from tm._paths import kuzu_projection_marker_path
 from tm.stores.kuzu_store import (
     ArcData,
     KuzuStore,
@@ -98,6 +99,7 @@ def test_kuzu_schema_initializes_idempotently(tmp_path: Path) -> None:
     db_path = tmp_path / "kg"
     store = KuzuStore(db_path)
     assert store.db_path == db_path
+    assert kuzu_projection_marker_path(db_path).exists()
     store.close()
 
     # Reopen — _ensure_schema runs again with CREATE TABLE IF NOT EXISTS.

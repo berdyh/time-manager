@@ -3,10 +3,8 @@
 Reads ``TM_LLM_BACKEND`` env var to pick between adapters; defaults to
 ``"anthropic"``. Backends: ``"anthropic"`` (direct API),
 ``"codex"`` (subprocess to OpenAI Codex CLI), ``"claude-code"``
-(subprocess to Claude Code CLI in --bare --print mode).
-
-Future backends (OpenAI direct, Ollama, OpenCode, Gemini) are tracked in
-TODOS.md as v1.1+ work.
+(subprocess to Claude Code CLI in --bare --print mode), ``"gemini"``
+(subprocess to Gemini CLI), and ``"kimchi"`` (subprocess to Kimchi CLI).
 """
 
 from __future__ import annotations
@@ -23,7 +21,9 @@ __all__ = ["BACKEND_ENV", "DEFAULT_BACKEND", "VALID_BACKENDS", "build_llm_client
 
 BACKEND_ENV = "TM_LLM_BACKEND"
 DEFAULT_BACKEND = "anthropic"
-VALID_BACKENDS: frozenset[str] = frozenset({"anthropic", "codex", "claude-code"})
+VALID_BACKENDS: frozenset[str] = frozenset(
+    {"anthropic", "codex", "claude-code", "gemini", "kimchi"}
+)
 
 
 def build_llm_client(
@@ -76,6 +76,14 @@ def build_llm_client(
         from tm.llm.codex_adapter import CodexAdapter
 
         return CodexAdapter(model=model, max_tokens=max_tokens)
+    if backend == "gemini":
+        from tm.llm.gemini_adapter import GeminiAdapter
+
+        return GeminiAdapter(model=model, max_tokens=max_tokens)
+    if backend == "kimchi":
+        from tm.llm.kimchi_adapter import KimchiAdapter
+
+        return KimchiAdapter(model=model, max_tokens=max_tokens)
     # backend == "claude-code"
     from tm.llm.claude_code_adapter import ClaudeCodeAdapter
 

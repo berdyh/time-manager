@@ -1,0 +1,304 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Future Implementation With Autoplan Notes</title>
+  <style>
+    body { font-family: system-ui, sans-serif; line-height: 1.5; margin: 2rem; max-width: 980px; color: #17202a; }
+    h1, h2 { line-height: 1.2; }
+    table { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+    th, td { border: 1px solid #cbd5e1; padding: 0.55rem; text-align: left; vertical-align: top; }
+    th { background: #f1f5f9; }
+    code { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 4px; padding: 0.05rem 0.2rem; }
+  </style>
+</head>
+<body>
+  <h1>Future Implementation With Autoplan Notes</h1>
+  <p>
+    Running notes for branch
+    <code>feature/capture-dashboard-export-privacy-daemon-eval</code>.
+    Strict <code>$autoplan</code> could not run in this Codex Default session
+    because the required <code>AskUserQuestion</code> gate is unavailable, so
+    this file records the implementation decisions instead of pretending the
+    full CEO/Design/Eng/DX gate ran.
+  </p>
+
+  <h2>Decisions, Deviations, Tradeoffs, Open Questions</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Type</th>
+        <th>Note</th>
+        <th>Impact</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Deviation</td>
+        <td>
+          <code>$autoplan</code> was treated as blocked, not simulated. Prior
+          project memory and the skill file both require a real
+          <code>AskUserQuestion</code> tool for premise and final approval gates.
+        </td>
+        <td>
+          The branch has code/tests plus this audit file, but not a formal
+          gstack autoplan review artifact.
+        </td>
+      </tr>
+      <tr>
+        <td>Design decision</td>
+        <td>
+          Capture is local-first: <code>tm capture telegram</code> imports
+          Telegram JSON exports, <code>tm capture calendar</code> imports
+          local <code>.ics</code> files, and <code>tm capture voice</code>
+          stores already-transcribed voice notes.
+        </td>
+        <td>
+          Ships useful ingestion without adding a bot, CalDAV OAuth, or audio
+          transcription service in this pass.
+        </td>
+      </tr>
+      <tr>
+        <td>Design decision</td>
+        <td>
+          Telegram and calendar capture imports use deterministic event IDs
+          from source metadata, so rerunning the same export skips duplicates.
+          Telegram IDs are scoped by chat/export identity; exports without a
+          top-level chat ID/name use stable non-content message metadata
+          hashes rather than a local file path, whole-export hash, or message
+          text hash.
+        </td>
+        <td>
+          Re-importing local files is safe for dashboard and variant counts
+          without adding a separate import ledger or leaking workstation paths
+          into exported data.
+        </td>
+      </tr>
+      <tr>
+        <td>Design decision</td>
+        <td>
+          Voice capture uses random event IDs unless an explicit source ID is
+          available; raw transcript text is not embedded in deterministic IDs.
+        </td>
+        <td>
+          Avoids leaking captured text through identifiers while preserving
+          deterministic imports for sources that provide stable metadata.
+        </td>
+      </tr>
+      <tr>
+        <td>Tradeoff</td>
+        <td>
+          SQLCipher/keyring support is optional and fail-closed. A configured
+          key is applied on project-owned SQLite connections, including backup
+          and reextract staging destinations, but the command reports an error
+          if the local driver does not expose SQLCipher. <code>tm encryption
+          set-key</code> prompts for the key and does not accept it on the
+          command line. Keyring storage is completed before a new encrypted
+          database file is created. Project-opened SQLite database files and
+          existing sidecars are hardened to owner-only permissions. SQLite
+          paths are expanded and resolved once, then the same path is used for
+          key lookup, file creation, opening, and permission hardening; the
+          <code>set-key</code> command uses that normalized path before refusing
+          existing databases or writing keyring entries. The temporary umask
+          used around SQLite creation/WAL setup is process-wide, so it is
+          guarded by a global lock for daemon worker threads.
+        </td>
+        <td>
+          Avoids a heavy dependency while preventing a false sense of
+          encryption on normal stdlib SQLite builds, and avoids leaving an
+          unusable encrypted DB when keyring storage fails. The default tm data
+          directory is also owner-only.
+        </td>
+      </tr>
+      <tr>
+        <td>Design decision</td>
+        <td>
+          <code>tm reextract</code> deletes only prior debrief-derived events
+          for a case date after a retained transcript has replayed
+          successfully in a staged database. If final production replacement
+          fails after the staged LLM call, staged cost rows are still appended
+          to the real cost ledger. Any privacy action committed during staging
+          aborts the final replacement under a write lock, so privacy wins over
+          stale reextract snapshots.
+        </td>
+        <td>
+          Calendar, Telegram, and voice capture events for the same day are
+          preserved unless the user explicitly runs privacy deletion, and a
+          failed replay leaves the previous debrief rows intact.
+        </td>
+      </tr>
+      <tr>
+        <td>Design decision</td>
+        <td>
+          Debriefs run through either the CLI or daemon retain the source
+          transcript only after extraction succeeds.
+        </td>
+        <td>
+          Keeps <code>tm reextract</code> usable for daemon-created cases
+          without letting failed or duplicate debrief attempts overwrite the
+          retained transcript.
+        </td>
+      </tr>
+      <tr>
+        <td>Tradeoff</td>
+        <td>
+          Retained transcripts are still keyed by <code>case_date</code>, but
+          same-day writes now merge text instead of replacing it. Duplicate
+          detection compares exact retained transcript segments, not arbitrary
+          substrings, upserts take an immediate SQLite write transaction, and
+          transcript write paths use the shared SQLite sidecar hardening path.
+        </td>
+        <td>
+          This preserves replay material for a day with both debrief and voice
+          capture, including short notes that appear inside longer debrief
+          text, while avoiding a broader transcript-table redesign in this
+          branch.
+        </td>
+      </tr>
+      <tr>
+        <td>Design decision</td>
+        <td>
+          Dashboard metrics include retained transcript counts, filtered by the
+          same <code>--since</code>/<code>--until</code> case-date window used
+          for events and suggestions.
+        </td>
+        <td>
+          Keeps the dashboard aligned with transcript retention, privacy, and
+          reextract behavior without adding a larger reporting surface.
+        </td>
+      </tr>
+      <tr>
+        <td>Design decision</td>
+        <td>
+          Privacy redaction and forget clear the local Kuzu projection path
+          after staging SQLite mutations but before committing them.
+        </td>
+        <td>
+          Kuzu is treated as rebuildable derived storage, so clearing the
+          projection is simpler and safer than trying to surgically edit graph
+          artifacts per redacted event.
+        </td>
+      </tr>
+      <tr>
+        <td>Design decision</td>
+        <td>
+          Custom Kuzu projection cleanup is allowed only for paths marked with
+          <code>.tm-kuzu-projection</code>. File-backed Kuzu paths use a sibling
+          marker; directory-backed paths use an internal marker. Symlinked
+          projection paths are refused before any privacy mutation. Kuzu cleanup
+          runs before SQLite commit, before best-effort
+          <code>VACUUM</code>/<code>wal_checkpoint</code> purging. Privacy
+          <code>--case-date</code> selectors use strict
+          <code>YYYY-MM-DD</code> validation instead of no-oping on malformed
+          dates, and they also match legacy events whose
+          <code>case_date</code> column still has the empty-string sentinel by
+          using the event timestamp's half-open day window. Privacy mutations
+          acquire <code>BEGIN IMMEDIATE</code> before selecting affected rows,
+          so concurrent captures cannot slip between selection and mutation. For
+          <code>--event-id</code>, legacy rows with an empty
+          <code>case_date</code> derive the associated transcript/suggestion day
+          from the event timestamp. Busy WAL checkpoint results surface as purge
+          warnings. <code>forget --event-id</code> reports transcript deletion
+          when it derives and clears the event's case transcript.
+        </td>
+        <td>
+          Keeps privacy commands from deleting arbitrary user-supplied paths
+          while still clearing project-owned derived storage even if SQLite
+          post-delete purging is temporarily blocked by another process. If
+          Kuzu cleanup itself fails, the SQLite privacy transaction rolls back.
+        </td>
+      </tr>
+      <tr>
+        <td>Tradeoff</td>
+        <td>
+          Calendar capture rejects <code>TZID</code>-qualified and recurring
+          events, plus floating datetimes, instead of guessing timezone
+          conversion or recurrence expansion. Date-only calendar values are
+          parsed before persistence so impossible dates are rejected. Telegram
+          capture prefers <code>date_unixtime</code> and does not treat naive
+          export <code>date</code> strings as UTC.
+        </td>
+        <td>
+          This avoids corrupting timestamps and case dates. Full timezone
+          conversion should be added before importing local-time calendar
+          exports at scale.
+        </td>
+      </tr>
+      <tr>
+        <td>Tradeoff</td>
+        <td>
+          <code>tm variants --trend</code> requires explicit
+          <code>--since</code> and <code>--until</code>, then compares with the
+          previous equal-size window.
+        </td>
+        <td>
+          Keeps trend labels deterministic and avoids guessing the user's
+          intended comparison period.
+        </td>
+      </tr>
+      <tr>
+        <td>Design decision</td>
+        <td>
+          Export and backup outputs reject the source database path and SQLite
+          sidecars (<code>-wal</code>, <code>-shm</code>, and
+          <code>-journal</code>) after canonicalizing the source database path.
+          JSON export reads all exported tables through one connection and one
+          read transaction.
+        </td>
+        <td>
+          Prevents JSON export or backup overwrite from clobbering live SQLite
+          state while the database is in WAL mode.
+        </td>
+      </tr>
+      <tr>
+        <td>Design decision</td>
+        <td>
+          Daemon detaching is POSIX double-fork behind the existing
+          <code>--no-foreground</code> flag. Foreground mode remains the
+          default for systemd, launchd, and tests. Start, stop, and status all
+          expand and resolve pid/socket paths consistently. Explicit daemon
+          paths do not force resolution or creation of the default data
+          directory.
+        </td>
+        <td>
+          Adds proper self-detach without disrupting supervised deployments.
+        </td>
+      </tr>
+      <tr>
+        <td>Deviation</td>
+        <td>
+          Live-LLM eval thresholds are separated from mock thresholds in the
+          eval harness, but no fresh live run was possible because
+          <code>TM_LLM_API_KEY</code> is not set in this environment.
+        </td>
+        <td>
+          The branch ships calibration machinery and conservative live gates;
+          the real eval companion repo should refresh those numbers.
+        </td>
+      </tr>
+      <tr>
+        <td>Open question</td>
+        <td>
+          Should Telegram become a long-running bot/webhook, or is local export
+          import enough for the first daily workflow?
+        </td>
+        <td>
+          Bot auth, allowlists, and message correction UX are intentionally
+          left out until that product choice is clear.
+        </td>
+      </tr>
+      <tr>
+        <td>Open question</td>
+        <td>
+          Should voice capture own transcription, or should it continue to
+          accept text from the user's preferred phone/OS transcription path?
+        </td>
+        <td>
+          Owning transcription adds model/runtime/privacy decisions that are
+          larger than this branch.
+        </td>
+      </tr>
+    </tbody>
+  </table>
+</body>
+</html>

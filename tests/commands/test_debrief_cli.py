@@ -6,14 +6,17 @@ made by these tests.
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+import pytest
 from typer.testing import CliRunner
 
 from tm.cli import app
 from tm.llm.client import ExtractResponse, Usage
 from tm.repositories.events import EventsRepository
+from tm.repositories.transcripts import TranscriptRepository
 from tm.repositories.vocabulary import VocabularyRepository
 from tm.stores.sqlite_store import SQLiteStore
 
@@ -211,17 +214,7 @@ def test_debrief_cli_renders_summary(tmp_path: Path, monkeypatch) -> None:
 def test_debrief_cli_renders_friendly_message_on_duplicate_summary(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """The CLI must convert DuplicateSummaryError into a friendly exit-1 message.
-
-    DuplicateSummaryError fires when migration 0010's partial UNIQUE index
-    rejects a race-induced second debrief_summary INSERT for the same
-    case_date (post-/simplify the daemon's coarse write lock no longer
-    serialises LLM-backed handlers, so two concurrent ``run_debrief``
-    invocations can both pass the pre-call SELECT and collide at INSERT).
-
-    Operator-facing UX: print "Debrief skipped: a summary already exists
-    for case_date=YYYY-MM-DD..." and exit 1 — not a traceback, not exit 0.
-    """
+    """The CLI converts DuplicateSummaryError into a friendly exit-1 message."""
     from tm.agents.debrief import DuplicateSummaryError
     from tm.commands import debrief as debrief_cmd
 
@@ -229,6 +222,12 @@ def test_debrief_cli_renders_friendly_message_on_duplicate_summary(
     db = _db(tmp_path)
     transcript = tmp_path / "transcript.txt"
     transcript.write_text("I finished deep work.", encoding="utf-8")
+    TranscriptRepository(db).upsert(
+        case_date="2026-05-15",
+        transcript_text="old transcript",
+        source="debrief",
+        extractor_version="debrief-v1",
+    )
 
     raising_agent = Mock()
     raising_agent.extract_and_persist.side_effect = DuplicateSummaryError(
@@ -236,10 +235,7 @@ def test_debrief_cli_renders_friendly_message_on_duplicate_summary(
         detail="UNIQUE constraint failed: events.case_date",
     )
 
-    with (
-        patch.object(debrief_cmd, "build_llm_client", return_value=Mock()),
-        patch.object(debrief_cmd, "DebriefAgent", return_value=raising_agent),
-    ):
+    with patch.object(debrief_cmd, "build_debrief_agent", return_value=raising_agent):
         result = _invoke_debrief(
             "--case-date",
             "2026-05-15",
@@ -255,3 +251,176 @@ def test_debrief_cli_renders_friendly_message_on_duplicate_summary(
     # And does NOT leak a raw traceback / class name.
     assert "Traceback" not in result.output
     assert "DuplicateSummaryError" not in result.output
+    retained = TranscriptRepository(db).get("2026-05-15")
+    assert retained is not None
+    assert retained.transcript_text == "old transcript"
+
+
+def test_reextract_preserves_existing_debrief_events_when_agent_fails(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("TM_LLM_API_KEY", "test-key")
+    db = _db(tmp_path)
+    EventsRepository(db).append_event(
+        event_id="old-debrief-event",
+        case_id="2026-06-05",
+        activity="deep_work",
+        timestamp="2026-06-05T09:00:00Z",
+        lifecycle="complete",
+        resource=None,
+        attributes={"duration_minutes": 60},
+        extractor_version="debrief-v1",
+        case_date="2026-06-05",
+    )
+    TranscriptRepository(db).upsert(
+        case_date="2026-06-05",
+        transcript_text="old transcript",
+        source="debrief",
+        extractor_version="debrief-v1",
+    )
+    new_transcript = tmp_path / "new-transcript.txt"
+    new_transcript.write_text("new transcript", encoding="utf-8")
+
+    from tm.commands import reextract as reextract_cmd
+
+    class FailingAgent:
+        def extract_and_persist(self, *args: object, **kwargs: object) -> None:
+            raise RuntimeError("llm failed")
+
+    with patch.object(
+        reextract_cmd,
+        "build_debrief_agent",
+        return_value=FailingAgent(),
+    ):
+        result = runner.invoke(
+            app,
+            [
+                "reextract",
+                "--case-date",
+                "2026-06-05",
+                "--transcript-file",
+                str(new_transcript),
+                "--db-path",
+                str(db),
+            ],
+        )
+
+    assert result.exit_code == 1
+    events = EventsRepository(db).query_events(case_date="2026-06-05")
+    assert [event["event_id"] for event in events] == ["old-debrief-event"]
+    transcript = TranscriptRepository(db).get("2026-06-05")
+    assert transcript is not None
+    assert transcript.transcript_text == "old transcript"
+
+
+def test_reextract_records_cost_when_production_replacement_fails(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("TM_LLM_API_KEY", "test-key")
+    db = _db(tmp_path)
+    TranscriptRepository(db).upsert(
+        case_date="2026-06-05",
+        transcript_text="old transcript",
+        source="debrief",
+        extractor_version="debrief-v1",
+    )
+
+    from tm.commands import reextract as reextract_cmd
+    from tm.security import connect_sqlite
+
+    class CostRecordingAgent:
+        def __init__(self, db_path: Path) -> None:
+            self._db_path = db_path
+
+        def extract_and_persist(self, *args: object, **kwargs: object) -> Mock:
+            conn = connect_sqlite(self._db_path)
+            try:
+                conn.execute(
+                    "INSERT INTO cost_ledger "
+                    "(ts, model, input_tokens, output_tokens, est_cost_usd, "
+                    "request_kind) VALUES (?, ?, ?, ?, ?, ?)",
+                    (
+                        "2026-06-05T12:00:00Z",
+                        "claude-test",
+                        10,
+                        5,
+                        0.01,
+                        "extract",
+                    ),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+            return Mock()
+
+    def _build_agent(**kwargs: object) -> CostRecordingAgent:
+        return CostRecordingAgent(kwargs["db_path"])  # type: ignore[arg-type]
+
+    with (
+        patch.object(reextract_cmd, "build_debrief_agent", side_effect=_build_agent),
+        patch.object(
+            reextract_cmd,
+            "_replace_debrief_events",
+            side_effect=RuntimeError("replacement failed"),
+        ),
+    ):
+        result = runner.invoke(
+            app,
+            [
+                "reextract",
+                "--case-date",
+                "2026-06-05",
+                "--db-path",
+                str(db),
+            ],
+        )
+
+    assert result.exit_code == 1
+    with sqlite3.connect(db) as conn:
+        rows = conn.execute(
+            "SELECT model, input_tokens, output_tokens, est_cost_usd, request_kind "
+            "FROM cost_ledger"
+        ).fetchall()
+    assert rows == [("claude-test", 10, 5, 0.01, "extract")]
+
+
+def test_reextract_replacement_aborts_when_privacy_fence_changes(
+    tmp_path: Path,
+) -> None:
+    db = _db(tmp_path)
+    EventsRepository(db).append_event(
+        event_id="old-debrief-event",
+        case_id="2026-06-05",
+        activity="deep_work",
+        timestamp="2026-06-05T09:00:00Z",
+        lifecycle="complete",
+        resource=None,
+        attributes={"duration_minutes": 60},
+        extractor_version="debrief-v1",
+        case_date="2026-06-05",
+    )
+
+    from tm.commands import reextract as reextract_cmd
+
+    privacy_fence = reextract_cmd._privacy_action_count(db)
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            "INSERT INTO privacy_actions "
+            "(action_id, action_type, selector, affected_events, affected_transcripts) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ("privacy-1", "forget", "case_date=2026-06-05", 1, 0),
+        )
+
+    with pytest.raises(reextract_cmd.PrivacyFenceChangedError):
+        reextract_cmd._replace_debrief_events(
+            db,
+            case_date="2026-06-05",
+            events=[],
+            cost_rows=[],
+            privacy_action_count=privacy_fence,
+        )
+
+    events = EventsRepository(db).query_events(case_date="2026-06-05")
+    assert [event["event_id"] for event in events] == ["old-debrief-event"]

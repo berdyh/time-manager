@@ -22,10 +22,13 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from tm.security import connect_sqlite, enable_wal_mode
+
 __all__ = ["VocabularyEntry", "VocabularyRepository"]
 
 # ISO 8601 UTC format used throughout this project (mirrors goals.py).
 _ISO_FMT = "%Y-%m-%dT%H:%M:%SZ"
+_SELECT_ENTRY_COLUMNS = "activity_name, description, vocab_version, added_at, status"
 
 
 def _now_iso() -> str:
@@ -96,10 +99,9 @@ class VocabularyEntry:
 
 
 def _open_conn(db_path: str) -> sqlite3.Connection:
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
+    conn = connect_sqlite(db_path, row_factory=True)
     conn.execute("PRAGMA foreign_keys=ON")
-    conn.execute("PRAGMA journal_mode=WAL")
+    enable_wal_mode(conn, db_path)
     return conn
 
 
@@ -111,6 +113,16 @@ def _row_to_entry(row: sqlite3.Row) -> VocabularyEntry:
         added_at=row["added_at"],
         status=row["status"],
     )
+
+
+def _fetch_entry(
+    conn: sqlite3.Connection,
+    activity_name: str,
+) -> sqlite3.Row | None:
+    return conn.execute(
+        f"SELECT {_SELECT_ENTRY_COLUMNS} FROM vocabulary WHERE activity_name = ?",
+        (activity_name,),
+    ).fetchone()
 
 
 # ---------------------------------------------------------------------------
@@ -205,7 +217,7 @@ class VocabularyRepository:
         conn = _open_conn(self._db_path)
         try:
             rows = conn.execute(
-                "SELECT activity_name, description, vocab_version, added_at, status "
+                f"SELECT {_SELECT_ENTRY_COLUMNS} "
                 "FROM vocabulary WHERE status = 'active' ORDER BY activity_name",
             ).fetchall()
         finally:
@@ -217,7 +229,7 @@ class VocabularyRepository:
         conn = _open_conn(self._db_path)
         try:
             rows = conn.execute(
-                "SELECT activity_name, description, vocab_version, added_at, status "
+                f"SELECT {_SELECT_ENTRY_COLUMNS} "
                 "FROM vocabulary ORDER BY activity_name",
             ).fetchall()
         finally:
@@ -228,11 +240,7 @@ class VocabularyRepository:
         """Return the entry for ``activity_name``, or ``None`` if not found."""
         conn = _open_conn(self._db_path)
         try:
-            row = conn.execute(
-                "SELECT activity_name, description, vocab_version, added_at, status "
-                "FROM vocabulary WHERE activity_name = ?",
-                (activity_name,),
-            ).fetchone()
+            row = _fetch_entry(conn, activity_name)
         finally:
             conn.close()
         return _row_to_entry(row) if row is not None else None
@@ -300,10 +308,7 @@ class VocabularyRepository:
 
         conn = _open_conn(self._db_path)
         try:
-            row = conn.execute(
-                "SELECT activity_name FROM vocabulary WHERE activity_name = ?",
-                (canonical_activity,),
-            ).fetchone()
+            row = _fetch_entry(conn, canonical_activity)
             if row is None:
                 raise ValueError(
                     f"Cannot add alias: canonical activity {canonical_activity!r} "
@@ -369,11 +374,7 @@ class VocabularyRepository:
             except sqlite3.IntegrityError as exc:
                 raise ValueError(f"activity already exists: {activity_name}") from exc
 
-            row = conn.execute(
-                "SELECT activity_name, description, vocab_version, added_at, status "
-                "FROM vocabulary WHERE activity_name = ?",
-                (activity_name,),
-            ).fetchone()
+            row = _fetch_entry(conn, activity_name)
         finally:
             conn.close()
 

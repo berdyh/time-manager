@@ -28,6 +28,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from tm.security import connect_sqlite, enable_wal_mode
+
 if TYPE_CHECKING:  # pragma: no cover - import cycle guard for type hints only
     pass
 
@@ -182,13 +184,13 @@ class SQLiteStore:
         # BEGIN IMMEDIATE for writes. ``check_same_thread=False`` so the
         # busy-retry test (and future daemon work) can drive the conn from
         # helper threads with explicit serialization.
-        self._conn = sqlite3.connect(
+        self._conn = connect_sqlite(
             self._db_path,
             isolation_level=None,
             check_same_thread=False,
             timeout=0.0,  # we implement our own backoff; don't double-wait
+            row_factory=True,
         )
-        self._conn.row_factory = sqlite3.Row
         self._apply_open_pragmas()
 
     # ------------------------------------------------------------------ open
@@ -196,7 +198,7 @@ class SQLiteStore:
     def _apply_open_pragmas(self) -> None:
         cur = self._conn.cursor()
         # WAL is persistent for on-disk DBs; harmless for :memory:.
-        cur.execute("PRAGMA journal_mode=WAL")
+        enable_wal_mode(self._conn, self._db_path)
         cur.execute("PRAGMA foreign_keys=ON")
         cur.execute("PRAGMA synchronous=NORMAL")
         cur.close()
@@ -252,6 +254,13 @@ class SQLiteStore:
                 ")"
             )
 
+    def _schema_migrations_exists(self, cur: sqlite3.Cursor) -> bool:
+        cur.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type='table' AND name='schema_migrations'"
+        )
+        return cur.fetchone() is not None
+
     def _discover_migrations(self) -> list[tuple[int, Path, str, bytes]]:
         """Return ``[(version, path, checksum, body), ...]`` sorted by version."""
         out: list[tuple[int, Path, str, bytes]] = []
@@ -272,11 +281,7 @@ class SQLiteStore:
     def applied_migrations(self) -> list[int]:
         cur = self._conn.cursor()
         try:
-            cur.execute(
-                "SELECT name FROM sqlite_master "
-                "WHERE type='table' AND name='schema_migrations'"
-            )
-            if cur.fetchone() is None:
+            if not self._schema_migrations_exists(cur):
                 return []
             cur.execute("SELECT version FROM schema_migrations ORDER BY version")
             return [int(row[0]) for row in cur.fetchall()]
@@ -286,11 +291,7 @@ class SQLiteStore:
     def _recorded_checksums(self) -> dict[int, str]:
         cur = self._conn.cursor()
         try:
-            cur.execute(
-                "SELECT name FROM sqlite_master "
-                "WHERE type='table' AND name='schema_migrations'"
-            )
-            if cur.fetchone() is None:
+            if not self._schema_migrations_exists(cur):
                 return {}
             cur.execute("SELECT version, checksum FROM schema_migrations")
             return {int(r[0]): str(r[1]) for r in cur.fetchall()}

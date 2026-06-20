@@ -14,7 +14,6 @@ canonical nor an alias).  LLM alignment can be layered on in a future task.
 
 from __future__ import annotations
 
-import sqlite3
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Annotated
@@ -24,6 +23,7 @@ import typer
 from tm._paths import default_db_path
 from tm.repositories.events import EventsRepository
 from tm.repositories.vocabulary import VocabularyRepository
+from tm.security import connect_sqlite
 from tm.stores.sqlite_store import SQLiteStore
 from tm.vocab_alignment import VocabAligner
 
@@ -73,8 +73,7 @@ def _load_novel_labels(
     alias.  Results are ordered by frequency (descending) and capped at
     ``limit``.
     """
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
+    conn = connect_sqlite(str(db_path), row_factory=True)
     try:
         rows = conn.execute(
             "SELECT activity, COUNT(*) AS cnt FROM events "
@@ -192,7 +191,6 @@ def review(
     aliases_added = 0
     canonicals_created = 0
     skipped = 0
-    remaining = len(novel_labels)
 
     for label, count in novel_labels:
         typer.echo(f"\n{label} (n={count})")

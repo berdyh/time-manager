@@ -17,7 +17,7 @@ and computes:
   ``mixed`` / ``bad_day``) matches the fixture's
   ``expected_variant_label``.
 
-Plan thresholds (locked v1, per the parent task packet):
+Mock-mode thresholds (locked v1, per the parent task packet):
 
 * field-level >= 0.85
 * trace-level >= 0.70
@@ -27,8 +27,9 @@ Because the LLM is mocked to return the *exact* expected dict, field- and
 trace-level should naturally land at 1.0 in v1; the harness exists as a
 regression contract so any future agent change that mangles persistence
 (timestamp normalization, attribute drops, etc.) trips the threshold.
-Future tasks (live-LLM evals against hand-labels) will surface real
-non-trivial accuracies under the same harness.
+Live mode uses a separate calibrated gate. The live fixture set is still tiny,
+so the thresholds are intentionally lower than mock mode and should be raised
+after the companion eval repo has 30+ real examples.
 
 By default there are NO live LLM calls and NO live network. Passing
 ``live_llm=True`` wires real :class:`AnthropicAdapter` instances for both
@@ -80,6 +81,9 @@ __all__ = [
     "FIXTURES_DIR",
     "GOAL_PLACEHOLDER",
     "MIGRATIONS_DIR",
+    "LIVE_THRESHOLD_FIELD_LEVEL",
+    "LIVE_THRESHOLD_TRACE_LEVEL",
+    "LIVE_THRESHOLD_VARIANT_ASSIGNMENT",
     "PLAN_THRESHOLD_FIELD_LEVEL",
     "PLAN_THRESHOLD_TRACE_LEVEL",
     "PLAN_THRESHOLD_VARIANT_ASSIGNMENT",
@@ -101,6 +105,13 @@ PLAN_THRESHOLD_TRACE_LEVEL: float = 0.70
 
 #: Minimum fraction of fixtures whose implied variant cluster label matches.
 PLAN_THRESHOLD_VARIANT_ASSIGNMENT: float = 0.75
+
+# Live-LLM thresholds are calibrated separately from mock mode. These are
+# release-smoke gates for the current tiny in-tree fixture set, not product
+# quality thresholds.
+LIVE_THRESHOLD_FIELD_LEVEL: float = 0.60
+LIVE_THRESHOLD_TRACE_LEVEL: float = 0.20
+LIVE_THRESHOLD_VARIANT_ASSIGNMENT: float = 0.50
 
 
 # ---------------------------------------------------------------------------
@@ -195,9 +206,9 @@ def load_fixtures(
 def run_eval(
     fixtures_dir: Path = FIXTURES_DIR,
     *,
-    field_threshold: float = PLAN_THRESHOLD_FIELD_LEVEL,
-    trace_threshold: float = PLAN_THRESHOLD_TRACE_LEVEL,
-    variant_threshold: float = PLAN_THRESHOLD_VARIANT_ASSIGNMENT,
+    field_threshold: float | None = None,
+    trace_threshold: float | None = None,
+    variant_threshold: float | None = None,
     live_llm: bool = False,
 ) -> EvalResult:
     """Run the in-tree v1 eval against every fixture under ``fixtures_dir``.
@@ -231,6 +242,21 @@ def run_eval(
     """
     if live_llm and not os.environ.get("TM_LLM_API_KEY"):
         raise RuntimeError("live_llm=True requires TM_LLM_API_KEY to be set")
+
+    if field_threshold is None:
+        field_threshold = (
+            LIVE_THRESHOLD_FIELD_LEVEL if live_llm else PLAN_THRESHOLD_FIELD_LEVEL
+        )
+    if trace_threshold is None:
+        trace_threshold = (
+            LIVE_THRESHOLD_TRACE_LEVEL if live_llm else PLAN_THRESHOLD_TRACE_LEVEL
+        )
+    if variant_threshold is None:
+        variant_threshold = (
+            LIVE_THRESHOLD_VARIANT_ASSIGNMENT
+            if live_llm
+            else PLAN_THRESHOLD_VARIANT_ASSIGNMENT
+        )
 
     fixtures = load_fixtures(fixtures_dir)
     fixture_names = tuple(name for name, _, _ in fixtures)
